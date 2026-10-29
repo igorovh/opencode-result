@@ -5,8 +5,16 @@
   "type": "module",
   "license": "MIT",
   "private": true,
+  "homepage": "https://github.com/igorovh/opencode-result#readme",
+  "bugs": {
+    "url": "https://github.com/igorovh/opencode-result/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igorovh/opencode-result.git"
+  },
   "keywords": ["opencode", "opencode-plugin", "tui"],
-  "files": ["src", "README.md"],
+  "files": ["src", "README.md", "LICENSE"],
   "exports": {
     ".": "./src/index.ts",
     "./tui": "./src/tui.tsx",
