@@ -4,19 +4,27 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { Plugin } from "@opencode/plugin/tui"
 import type { Context } from "@opencode/plugin/tui/context"
-import type { BoxRenderable, MouseEvent, ScrollBoxRenderable, SyntaxStyle } from "@opentui/core"
+import {
+  MacOSScrollAccel,
+  type BoxRenderable,
+  type MouseEvent,
+  type ScrollBoxRenderable,
+  type SyntaxStyle,
+} from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
-import { splitMarkdown } from "./markdown"
+import { splitSections, type Section } from "./markdown"
 import { ResultRpc, type Report, type ReportChanged, type ReportStatus, type ReportSummary } from "./rpc"
 import { markdownSyntax } from "./syntax"
 
-const ROUTE = "result"
 const MAX_SIDEBAR_ITEMS = 8
-// Images reappear this long after scrolling stops.
-const SCROLL_SETTLE_MS = 150
+const DIALOG_WIDTH = 116
+const LEGEND_WIDTH = 32
+const SCROLL_STEP = 2
+// Images switch from blocks to full quality this long after scrolling stops.
+const SCROLL_SETTLE_MS = 120
 
 type Ref = { sessionID: string; reportID: string }
-type RouteData = { sessionID: string; reportID?: string }
 
 function truncate(value: string, width: number) {
   if (width <= 0) return ""
@@ -82,25 +90,41 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     return { char: "●", color: feedback.success.base }
   }
 
-  const currentRoute = (): RouteData | undefined => {
-    const route = context.ui.router.current()
-    return route.type === "plugin" && route.name === ROUTE ? (route.data as RouteData) : undefined
+  /** Opens one report. Opened from the list, closing it returns to the list; otherwise to the session. */
+  const open = (ref: Ref, fromList = false) => {
+    context.ui.dialog.show(
+      () => <ReportDialog target={ref} fromList={fromList} />,
+      () => {
+        repaint()
+        // Let the host finish closing this dialog before it shows the next one.
+        if (fromList) setTimeout(() => void openList(ref.sessionID))
+      },
+    )
+    context.ui.dialog.set({ size: "xlarge", centered: true })
   }
 
-  const navigate = (data: RouteData) => context.ui.router.navigate({ type: "plugin", name: ROUTE, data })
-
-  const back = () => {
-    const data = currentRoute()
-    if (!data) return
-    if (data.reportID && data.sessionID) navigate({ sessionID: data.sessionID })
-    else context.ui.router.navigate({ type: "session", sessionID: data.sessionID })
+  const openList = async (sessionID: string) => {
+    const reports = await fetchList(familyOf(sessionID))
+    if (!reports.length) return context.ui.toast.show({ message: "No results in this session yet", variant: "info" })
+    const picked = await context.ui.dialog.select({
+      title: "Results",
+      placeholder: "Search results",
+      options: reports.map((report) => ({
+        title: `${statusMark(report.status).char} ${report.title}`,
+        value: report,
+        description: report.status + (report.imageCount ? ` · ▣${report.imageCount}` : ""),
+        footer: formatTime(report.createdAt),
+      })),
+    })
+    if (picked) open({ sessionID: picked.sessionID, reportID: picked.id }, true)
   }
 
-  const openList = () => {
+  const openCurrent = () => {
     const route = context.ui.router.current()
-    const sessionID = route.type === "session" ? route.sessionID : currentRoute()?.sessionID
-    if (!sessionID) return context.ui.toast.show({ message: "Open a session first", variant: "warning" })
-    navigate({ sessionID })
+    if (route.type !== "session") return context.ui.toast.show({ message: "Open a session first", variant: "warning" })
+    void openList(route.sessionID).catch((error) =>
+      context.ui.toast.show({ message: error instanceof Error ? error.message : String(error), variant: "error" }),
+    )
   }
 
   const stopEvents = api.events.on("changed", (event) => {
@@ -110,18 +134,19 @@ function createUI(context: Context, syntax: SyntaxStyle) {
       context.ui.toast.show({ title: "New result", message: data.title, variant: "success", sessionID: data.sessionID })
   })
 
-  function ReportRow(props: { report: ReportSummary; width: number; active?: boolean; onSelect: () => void }) {
+  function Row(props: {
+    width: number
+    active?: boolean
+    onSelect: () => void
+    children: (width: number) => any
+  }) {
     const [hovered, setHovered] = createSignal(false)
-    const mark = () => statusMark(props.report.status)
-    const time = () => formatTime(props.report.createdAt)
-    const images = () => (props.report.imageCount ? ` ▣${props.report.imageCount}` : "")
-    const titleWidth = () => props.width - 2 - time().length - images().length - 1
     return (
       <box
         flexDirection="row"
         height={1}
         flexShrink={0}
-        backgroundColor={props.active || hovered() ? theme().background.raised.high : undefined}
+        backgroundColor={props.active ? theme().background.raised.max : hovered() ? theme().background.raised.high : undefined}
         onMouseOver={() => setHovered(true)}
         onMouseOut={() => setHovered(false)}
         onMouseUp={(event: MouseEvent) => {
@@ -130,11 +155,27 @@ function createUI(context: Context, syntax: SyntaxStyle) {
           props.onSelect()
         }}
       >
-        <text selectable={false} fg={mark().color}>{mark().char + " "}</text>
-        <text selectable={false} fg={theme().text.base}>{truncate(props.report.title, titleWidth())}</text>
-        <box flexGrow={1} />
-        <text selectable={false} fg={theme().text.muted}>{images() + " " + time()}</text>
+        {props.children(props.width)}
       </box>
+    )
+  }
+
+  function ReportRow(props: { report: ReportSummary; width: number; onSelect: () => void }) {
+    const mark = () => statusMark(props.report.status)
+    const meta = () =>
+      (props.report.imageCount ? ` ▣${props.report.imageCount}` : "") +
+      " " + formatTime(props.report.createdAt)
+    return (
+      <Row width={props.width} onSelect={props.onSelect}>
+        {(width) => (
+          <>
+            <text selectable={false} fg={mark().color}>{mark().char + " "}</text>
+            <text selectable={false} fg={theme().text.base}>{truncate(props.report.title, width - 3 - meta().length)}</text>
+            <box flexGrow={1} />
+            <text selectable={false} fg={theme().text.muted}>{meta()}</text>
+          </>
+        )}
+      </Row>
     )
   }
 
@@ -153,7 +194,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
             setWidth(this.width)
           }}
         >
-          <box flexDirection="row" flexShrink={0} onMouseUp={() => navigate({ sessionID: props.sessionID })}>
+          <box flexDirection="row" flexShrink={0} onMouseUp={() => void openList(props.sessionID)}>
             <text fg={theme().text.base}>
               <b>Results</b>
             </text>
@@ -165,85 +206,17 @@ function createUI(context: Context, syntax: SyntaxStyle) {
               <ReportRow
                 report={report}
                 width={width()}
-                onSelect={() => navigate({ sessionID: props.sessionID, reportID: report.id })}
+                onSelect={() => open({ sessionID: report.sessionID, reportID: report.id })}
               />
             )}
           </For>
           <Show when={reports().length > MAX_SIDEBAR_ITEMS}>
-            <box height={1} flexShrink={0} onMouseUp={() => navigate({ sessionID: props.sessionID })}>
+            <box height={1} flexShrink={0} onMouseUp={() => void openList(props.sessionID)}>
               <text fg={theme().text.muted}>{`… ${reports().length - MAX_SIDEBAR_ITEMS} more (/results)`}</text>
             </box>
           </Show>
         </box>
       </Show>
-    )
-  }
-
-  function Header(props: { title: string; hint: string }) {
-    return (
-      <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} backgroundColor={theme().background.raised.base}>
-        <text fg={theme().text.base}>
-          <b>{props.title}</b>
-        </text>
-        <box flexGrow={1} />
-        <text fg={theme().text.muted}>{props.hint}</text>
-      </box>
-    )
-  }
-
-  function ListPage(props: { sessionID: string }) {
-    const reports = asyncValue(
-      () => ({ ids: familyOf(props.sessionID), version: version() }),
-      ({ ids }) => fetchList(ids),
-      [] as ReportSummary[],
-    )
-    const [index, setIndex] = createSignal(0)
-    const current = () => reports()[Math.min(index(), reports().length - 1)]
-    const move = (delta: number) => setIndex((value) => Math.max(0, Math.min(reports().length - 1, value + delta)))
-    const open = (report = current()) => report && navigate({ sessionID: props.sessionID, reportID: report.id })
-    const remove = async () => {
-      const report = current()
-      if (!report) return
-      const confirmed = await context.ui.dialog.confirm({
-        title: "Delete result",
-        message: `Delete "${report.title}" and its images?`,
-        label: { confirm: "Delete" },
-      })
-      if (confirmed) await api.remove({ sessionID: report.sessionID, reportID: report.id })
-    }
-
-    context.keymap.layer(() => ({
-      priority: 50,
-      commands: [
-        { title: "Previous result", group: "Results", bind: "up,k", run: () => move(-1) },
-        { title: "Next result", group: "Results", bind: "down,j", run: () => move(1) },
-        { title: "Open result", group: "Results", bind: "return", run: () => void open() },
-        { title: "Delete result", group: "Results", bind: "d,delete", run: () => void remove() },
-        { title: "Back to session", group: "Results", bind: "escape,q", run: back },
-      ],
-    }))
-
-    return (
-      <box flexDirection="column" flexGrow={1}>
-        <Header title="Results" hint="↑↓ select · enter open · d delete · esc back" />
-        <Show
-          when={reports().length > 0}
-          fallback={<text fg={theme().text.muted}> No results in this session yet.</text>}
-        >
-          <scrollbox flexGrow={1} minHeight={0} paddingLeft={1} paddingRight={1} marginTop={1}>
-            <For each={reports()}>
-              {(report, position) => (
-                <ReportRow
-                  report={report}
-                  width={Math.max(10, context.renderer.width - 2)}
-                  active={position() === index()}
-                  onSelect={() => open(report)}
-                />
-              )}
-            </For>
-          </scrollbox>
-        </Show>
-      </box>
     )
   }
 
@@ -253,7 +226,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     alt: string
     width: number
     maxHeight: number
-    shown: (box: BoxRenderable | undefined) => boolean
+    crisp: (box: BoxRenderable | undefined) => boolean
   }) {
     const info = () => props.report.images.find((image) => image.file === props.file)
     const local = createMemo(() => {
@@ -300,22 +273,15 @@ function createUI(context: Context, syntax: SyntaxStyle) {
             if (event.button === 0 && file) openExternal(file)
           }}
         >
-          <Show
-            when={source() && props.shown(box)}
-            fallback={
-              <box
-                width={size().width}
-                height={size().height}
-                border
-                borderColor={theme().text.muted}
-                justifyContent="center"
-                alignItems="center"
-              >
-                <text fg={theme().text.muted}>{source() ? "▣ scroll to show the image" : "Loading image…"}</text>
-              </box>
-            }
-          >
-            <image source={source()} fit="fit" width={size().width} height={size().height} />
+          <Show when={source()} fallback={<text fg={theme().text.muted}>Loading image…</text>}>
+            {/* Blocks are plain cells, so they clip cleanly while the image is moving or cut off. */}
+            <image
+              source={source()}
+              fit="fit"
+              protocol={props.crisp(box) ? "auto" : "blocks"}
+              width={size().width}
+              height={size().height}
+            />
           </Show>
         </box>
         <Show when={props.alt}>
@@ -327,58 +293,100 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     )
   }
 
-  function ReportPage(props: { target: Ref }) {
-    const report = asyncValue(() => ({ target: props.target, version: version() }), ({ target }) => fetchReport(target), undefined)
-    const blocks = createMemo(() => splitMarkdown(report()?.markdown ?? ""))
-    const contentWidth = () => Math.max(10, Math.min(context.renderer.width - 4, 120))
-    let scroll: ScrollBoxRenderable | undefined
+  function ReportDialog(props: { target: Ref; fromList: boolean }) {
+    context.ui.dialog.set({ size: "xlarge", centered: true })
+    const dimensions = useTerminalDimensions()
+    const width = () => Math.min(DIALOG_WIDTH, dimensions().width - 2) - 4
+    const height = () => Math.max(12, dimensions().height - 6)
+    const contentWidth = () => Math.max(20, width() - LEGEND_WIDTH - 3)
 
-    // Hide images while scrolling; show only fully visible ones once it stops.
-    const [settled, setSettled] = createSignal(false)
+    const report = asyncValue(
+      () => ({ target: props.target, version: version() }),
+      ({ target }) => fetchReport(target),
+      undefined as Report | undefined,
+    )
+    const sections = createMemo(() => splitSections(report()?.markdown ?? ""))
+    const outline = createMemo(() =>
+      sections()
+        .map((section, index) => ({ section, index }))
+        .filter(({ section }) => section.type === "image" || section.heading),
+    )
+
+    let scroll: ScrollBoxRenderable | undefined
+    const blocks: (BoxRenderable | undefined)[] = []
+    const offsetOf = (index: number) => {
+      const block = blocks[index]
+      if (!scroll || !block || block.isDestroyed) return undefined
+      return block.screenY - scroll.content.screenY
+    }
+
+    const [scrolling, setScrolling] = createSignal(true)
     const [layoutTick, setLayoutTick] = createSignal(0)
+    const [activeIndex, setActiveIndex] = createSignal(-1)
     let lastTop = -1
     let lastHeight = -1
     let settleTimer: ReturnType<typeof setTimeout> | undefined
     const poll = setInterval(() => {
       if (!scroll || scroll.isDestroyed) return
       const top = scroll.scrollTop
-      const height = scroll.viewport.height
-      if (top === lastTop && height === lastHeight) return
+      const viewport = scroll.viewport.height
+      if (top === lastTop && viewport === lastHeight) return
       lastTop = top
-      lastHeight = height
-      setSettled(false)
+      lastHeight = viewport
+      setScrolling(true)
+      let active = -1
+      for (const { index } of outline()) {
+        const offset = offsetOf(index)
+        if (offset !== undefined && offset <= top + 1) active = index
+      }
+      setActiveIndex(active)
       clearTimeout(settleTimer)
       settleTimer = setTimeout(() => {
         setLayoutTick((value) => value + 1)
-        setSettled(true)
+        setScrolling(false)
       }, SCROLL_SETTLE_MS)
-    }, 40)
+    }, 30)
     onCleanup(() => {
       clearInterval(poll)
       clearTimeout(settleTimer)
-      repaint()
     })
-    createEffect(on(settled, repaint, { defer: true }))
+    createEffect(on(scrolling, repaint, { defer: true }))
 
-    const shown = (box: BoxRenderable | undefined) => {
+    const crisp = (box: BoxRenderable | undefined) => {
       layoutTick()
-      if (!settled() || !box || !scroll || box.isDestroyed) return false
+      if (scrolling() || !box || !scroll || box.isDestroyed) return false
       const viewport = scroll.viewport
       return box.screenY >= viewport.screenY && box.screenY + box.height <= viewport.screenY + viewport.height
     }
 
-    const scrollBy = (delta: number) => scroll?.scrollBy(delta)
-    const page = () => Math.max(1, (scroll?.viewport.height ?? 10) - 2)
+    const jumpTo = (index: number) => {
+      const offset = offsetOf(index)
+      if (offset !== undefined) scroll?.scrollTo(offset)
+    }
+    const jumpSection = (delta: number) => {
+      const list = outline().map(({ index }) => index)
+      const top = scroll?.scrollTop ?? 0
+      const target =
+        delta > 0
+          ? list.find((index) => (offsetOf(index) ?? 0) > top + 1)
+          : list.findLast((index) => (offsetOf(index) ?? 0) < top - 1)
+      if (target !== undefined) jumpTo(target)
+      else if (delta < 0) scroll?.scrollTo(0)
+    }
+    const page = () => Math.max(1, (scroll?.viewport.height ?? 10) - 3)
 
     context.keymap.layer(() => ({
+      mode: "modal",
       priority: 50,
       commands: [
-        { title: "Scroll up", group: "Results", bind: "up,k", run: () => scrollBy(-1) },
-        { title: "Scroll down", group: "Results", bind: "down,j", run: () => scrollBy(1) },
-        { title: "Page up", group: "Results", bind: "pageup,b", run: () => scrollBy(-page()) },
-        { title: "Page down", group: "Results", bind: "pagedown,space", run: () => scrollBy(page()) },
+        { title: "Scroll up", group: "Results", bind: "up,k", run: () => scroll?.scrollBy(-SCROLL_STEP) },
+        { title: "Scroll down", group: "Results", bind: "down,j", run: () => scroll?.scrollBy(SCROLL_STEP) },
+        { title: "Page up", group: "Results", bind: "pageup,b", run: () => scroll?.scrollBy(-page()) },
+        { title: "Page down", group: "Results", bind: "pagedown,space", run: () => scroll?.scrollBy(page()) },
         { title: "Top", group: "Results", bind: "home,g", run: () => scroll?.scrollTo(0) },
         { title: "Bottom", group: "Results", bind: "end,shift+g", run: () => scroll?.scrollTo(scroll.scrollHeight) },
+        { title: "Next section", group: "Results", bind: "n,right,l", run: () => jumpSection(1) },
+        { title: "Previous section", group: "Results", bind: "p,left,h", run: () => jumpSection(-1) },
         {
           title: "Open report folder",
           group: "Results",
@@ -388,80 +396,114 @@ function createUI(context: Context, syntax: SyntaxStyle) {
             if (dir && existsSync(dir)) openExternal(dir)
           },
         },
-        { title: "Back to results", group: "Results", bind: "escape,q,backspace", run: back },
       ],
     }))
 
+    const legendLabel = (section: Section) =>
+      section.type === "image"
+        ? "▣ " + (section.alt || "image")
+        : "  ".repeat(Math.max(0, (section.heading?.level ?? 2) - 2)) + (section.heading?.text ?? "")
+
     return (
-      <box flexDirection="column" flexGrow={1}>
-        <Header
-          title={report() ? truncate(report()!.title, Math.max(10, context.renderer.width - 50)) : "Result"}
-          hint="↑↓ space scroll · o folder · click image · esc back"
-        />
-        <Show when={report()} fallback={<text fg={theme().text.muted}> Loading result…</text>}>
-          {(loaded) => (
-            <scrollbox
-              ref={(element: ScrollBoxRenderable) => (scroll = element)}
-              flexGrow={1}
-              minHeight={0}
-            >
-              <box flexDirection="column" flexShrink={0} gap={1} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-                <box flexDirection="row" flexShrink={0}>
-                  <text fg={statusMark(loaded().status).color}>{statusMark(loaded().status).char + " "}</text>
-                  <text fg={theme().text.muted}>
-                    {`${loaded().status} · ${formatTime(loaded().createdAt)}` +
-                      (loaded().imageCount
-                        ? ` · ${loaded().imageCount} image${loaded().imageCount === 1 ? "" : "s"}`
-                        : "")}
-                  </text>
+      <box flexDirection="column" width={width()} height={height()}>
+        <box flexDirection="row" flexShrink={0}>
+          <Show when={report()} fallback={<text fg={theme().text.base}><b>Result</b></text>}>
+            {(loaded) => (
+              <>
+                <text fg={statusMark(loaded().status).color}>{statusMark(loaded().status).char + " "}</text>
+                <text fg={theme().text.base}>
+                  <b>{truncate(loaded().title, contentWidth() - 2)}</b>
+                </text>
+                <box flexGrow={1} />
+                <text fg={theme().text.muted}>
+                  {`${loaded().status} · ${formatTime(loaded().createdAt)}` +
+                    (loaded().imageCount ? ` · ▣${loaded().imageCount}` : "")}
+                </text>
+              </>
+            )}
+          </Show>
+        </box>
+        <box flexDirection="row" flexGrow={1} minHeight={0} marginTop={1}>
+          <Show
+            when={report()}
+            fallback={<text fg={theme().text.muted}>Loading result…</text>}
+          >
+            {(loaded) => (
+              <scrollbox
+                ref={(element: ScrollBoxRenderable) => (scroll = element)}
+                width={contentWidth()}
+                flexShrink={0}
+                minHeight={0}
+                scrollAcceleration={new MacOSScrollAccel()}
+              >
+                <box flexDirection="column" flexShrink={0} gap={1} paddingRight={1}>
+                  <For each={sections()}>
+                    {(section, index) => (
+                      <box ref={(element: BoxRenderable) => (blocks[index()] = element)} flexShrink={0}>
+                        <Switch>
+                          <Match when={section.type === "markdown" && section}>
+                            {(text) => (
+                              <markdown content={text().text} syntaxStyle={syntax} conceal width={contentWidth() - 2} flexShrink={0} />
+                            )}
+                          </Match>
+                          <Match when={section.type === "image" && section}>
+                            {(image) => (
+                              <ImageBlock
+                                report={loaded()}
+                                file={image().src}
+                                alt={image().alt}
+                                width={contentWidth() - 2}
+                                maxHeight={height() - 6}
+                                crisp={crisp}
+                              />
+                            )}
+                          </Match>
+                        </Switch>
+                      </box>
+                    )}
+                  </For>
                 </box>
-                <For each={blocks()}>
-                  {(block) => (
-                    <Switch>
-                      <Match when={block.type === "markdown" && block}>
-                        {(text) => (
-                          <markdown content={text().text} syntaxStyle={syntax} conceal width={contentWidth()} flexShrink={0} />
-                        )}
-                      </Match>
-                      <Match when={block.type === "image" && block}>
-                        {(image) => (
-                          <ImageBlock
-                            report={loaded()}
-                            file={image().src}
-                            alt={image().alt}
-                            width={contentWidth()}
-                            maxHeight={context.renderer.height - 6}
-                            shown={shown}
-                          />
-                        )}
-                      </Match>
-                    </Switch>
+              </scrollbox>
+            )}
+          </Show>
+          <box flexGrow={1} />
+          <box
+            width={LEGEND_WIDTH}
+            flexShrink={0}
+            flexDirection="column"
+            border={["left"]}
+            borderColor={theme().border?.base ?? theme().text.muted}
+            paddingLeft={1}
+          >
+            <scrollbox flexGrow={1} minHeight={0}>
+              <text fg={theme().text.muted}>CONTENTS</text>
+              <Show when={outline().length > 0} fallback={<text fg={theme().text.muted}>No sections</text>}>
+                <For each={outline()}>
+                  {(entry) => (
+                    <Row width={LEGEND_WIDTH - 3} active={activeIndex() === entry.index} onSelect={() => jumpTo(entry.index)}>
+                      {(rowWidth) => (
+                        <text
+                          selectable={false}
+                          fg={entry.section.type === "image" ? theme().text.muted : theme().text.base}
+                        >
+                          {truncate(legendLabel(entry.section), rowWidth)}
+                        </text>
+                      )}
+                    </Row>
                   )}
                 </For>
-              </box>
+              </Show>
             </scrollbox>
-          )}
-        </Show>
+          </box>
+        </box>
+        <text fg={theme().text.muted} marginTop={1}>
+          {`↑↓ scroll · space page · n/p section · o folder · click image to open · esc ${props.fromList ? "back" : "close"}`}
+        </text>
       </box>
     )
   }
 
-  function Page(props: { data?: Record<string, any> }) {
-    const data = () => props.data as RouteData | undefined
-    return (
-      <Show when={data()?.sessionID} fallback={<text> No session selected.</text>}>
-        <Show
-          when={data()?.reportID}
-          keyed
-          fallback={<ListPage sessionID={data()!.sessionID} />}
-        >
-          {(reportID) => <ReportPage target={{ sessionID: data()!.sessionID, reportID }} />}
-        </Show>
-      </Show>
-    )
-  }
-
-  return { Sidebar, Page, openList, stopEvents }
+  return { Sidebar, open, openCurrent, stopEvents }
 }
 
 export default Plugin.define({
@@ -470,7 +512,6 @@ export default Plugin.define({
     const syntax = markdownSyntax(context.theme, context.renderer.nativeScene)
     const ui = createUI(context, syntax)
 
-    const stopRoute = context.ui.router.register({ name: ROUTE, render: (input) => <ui.Page data={input.data} /> })
     const stopSidebar = context.ui.slot({
       append: "sidebar.content",
       render: (input) => <ui.Sidebar sessionID={input.sessionID} />,
@@ -485,14 +526,13 @@ export default Plugin.define({
           group: "Results",
           palette: true,
           slash: { name: "results" },
-          run: ui.openList,
+          run: ui.openCurrent,
         },
       ],
     }))
 
     return () => {
       ui.stopEvents()
-      stopRoute()
       stopSidebar()
       void context.renderer.idle().then(() => syntax.destroy())
     }

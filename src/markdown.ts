@@ -40,6 +40,43 @@ export function splitMarkdown(markdown: string): Block[] {
   return blocks
 }
 
+export type Section = Block & { heading?: { text: string; level: number } }
+
+const HEADING = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/
+
+/** Like splitMarkdown, but also starts a new text block at every heading, for a table of contents. */
+export function splitSections(markdown: string): Section[] {
+  const sections: Section[] = []
+  for (const block of splitMarkdown(markdown)) {
+    if (block.type === "image") {
+      sections.push(block)
+      continue
+    }
+    let lines: string[] = []
+    let heading: Section["heading"]
+    let fence: string | undefined
+    const flush = () => {
+      const text = lines.join("\n").trim()
+      if (text) sections.push(heading ? { type: "markdown", text, heading } : { type: "markdown", text })
+      lines = []
+      heading = undefined
+    }
+    for (const line of block.text.split("\n")) {
+      const marker = FENCE.exec(line)?.[1]
+      if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length)))
+        fence = fence ? undefined : marker
+      const match = fence || marker ? undefined : HEADING.exec(line)
+      if (match) {
+        flush()
+        heading = { text: match[2]!.replace(/[*_`]/g, ""), level: match[1]!.length }
+      }
+      lines.push(line)
+    }
+    flush()
+  }
+  return sections
+}
+
 export function joinMarkdown(blocks: readonly Block[]) {
   return blocks
     .map((block) => (block.type === "markdown" ? block.text : `![${block.alt}](<${block.src}>)`))

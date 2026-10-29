@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { sniffImage } from "../src/image"
-import { joinMarkdown, splitMarkdown } from "../src/markdown"
+import { joinMarkdown, splitMarkdown, splitSections } from "../src/markdown"
 import { Store } from "../src/store"
 
 function png(width: number, height: number) {
@@ -40,6 +40,16 @@ describe("splitMarkdown", () => {
     expect(splitMarkdown(markdown)).toEqual([
       { type: "markdown", text: "```md\n![x](y.png)\n```" },
       { type: "image", alt: "real", src: "z.png" },
+    ])
+  })
+
+  test("splitSections starts a block at each heading, ignoring code fences", () => {
+    const sections = splitSections("Intro\n## Changes\n- a\n```\n# not a heading\n```\n![shot](s.png)\n### Notes **bold**\ntext")
+    expect(sections).toEqual([
+      { type: "markdown", text: "Intro" },
+      { type: "markdown", text: "## Changes\n- a\n```\n# not a heading\n```", heading: { text: "Changes", level: 2 } },
+      { type: "image", alt: "shot", src: "s.png" },
+      { type: "markdown", text: "### Notes **bold**\ntext", heading: { text: "Notes bold", level: 3 } },
     ])
   })
 
