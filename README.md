@@ -38,11 +38,13 @@ temporary screenshots can be deleted afterwards. A missing or invalid image fail
 
 ## TUI
 
-- **Sidebar:** a `Results` list under the other sidebar sections. Click a report to open it.
-- **`/results`** (or the command palette) opens the list in the side panel.
-- **List:** `↑`/`↓` select, `Enter` open, `d` delete, `Esc` close.
-- **Report:** `↑`/`↓`/`PgUp`/`PgDn` scroll, `f` fullscreen, `o` open the report folder, `Esc` back. Click an image to
-  open it in the system viewer.
+- **Sidebar:** a `Results` list under the other sidebar sections. Click a report to open it full screen.
+- **`/results`** (or the command palette) opens the session's report list full screen.
+- **List:** `↑`/`↓` select, `Enter` open, `d` delete, `Esc` back to the session.
+- **Report:** `↑`/`↓`, `Space`/`b`, `PgUp`/`PgDn` and the mouse wheel scroll, `o` opens the report folder, `Esc` goes
+  back. Click an image to open it in the system viewer.
+- While you scroll, images turn into frames, and once you stop only fully visible images are drawn. Terminal graphics
+  cannot be clipped cleanly, so this keeps scrolling free of leftover pixels.
 - A toast appears when the agent publishes a new report.
 
 Images render with OpenTUI's `<image>`: Kitty graphics, then Sixel, then colored Unicode blocks. Force a protocol with
