@@ -4,6 +4,12 @@ export type Block = { type: "markdown"; text: string } | { type: "image"; alt: s
 // contain spaces, because agents write Windows paths like that.
 const IMAGE = /!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^()<>"]+?))(?:\s+"[^"]*")?\s*\)/g
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/
+const CODE_SPAN = /(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)/g
+
+/** Character ranges of inline code spans, where image syntax is just text. */
+function codeSpans(line: string) {
+  return [...line.matchAll(CODE_SPAN)].map((match) => [match.index!, match.index! + match[0].length] as const)
+}
 
 /** Splits markdown into text and image blocks. Images inside fenced code stay text. */
 export function splitMarkdown(markdown: string): Block[] {
@@ -28,7 +34,9 @@ export function splitMarkdown(markdown: string): Block[] {
     }
 
     let last = 0
+    const spans = codeSpans(line)
     for (const match of line.matchAll(IMAGE)) {
+      if (spans.some(([start, end]) => match.index! >= start && match.index! < end)) continue
       text += line.slice(last, match.index)
       flush()
       blocks.push({ type: "image", alt: match[1]!.trim(), src: (match[2] ?? match[3])!.trim() })

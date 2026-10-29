@@ -51,16 +51,23 @@ function openExternal(target: string) {
   spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => {}).unref()
 }
 
-/** Like createResource, but never suspends the host's UI while loading. */
-function asyncValue<S, T>(source: () => S, load: (input: S) => Promise<T>, initial: T) {
+/** Like createResource, but never suspends the host's UI while loading. `discard` frees stale results. */
+function asyncValue<S, T>(
+  source: () => S,
+  load: (input: S) => Promise<T>,
+  initial: T,
+  options: { discard?: (value: T) => void; onError?: (error: unknown) => void } = {},
+) {
   const [value, setValue] = createSignal<T>(initial)
   let request = 0
+  let disposed = false
+  onCleanup(() => (disposed = true))
   createEffect(() => {
     const input = source()
     const id = ++request
     load(input).then(
-      (result) => id === request && setValue(() => result),
-      () => {},
+      (result) => (id === request && !disposed ? setValue(() => result) : options.discard?.(result)),
+      (error) => id === request && !disposed && options.onError?.(error),
     )
   })
   return value
@@ -84,6 +91,9 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     context.renderer.requestRender()
   }
 
+  const showError = (error: unknown) =>
+    context.ui.toast.show({ message: error instanceof Error ? error.message : String(error), variant: "error" })
+
   const statusMark = (status: ReportStatus) => {
     const feedback = theme().text.feedback
     if (status === "failed") return { char: "✕", color: feedback.error.base }
@@ -104,7 +114,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     const current = shown()
     setShown(undefined)
     repaint()
-    if (current?.fromList) setTimeout(() => void openList(current.ref.sessionID))
+    if (current?.fromList) setTimeout(() => void openList(current.ref.sessionID).catch(showError))
   }
 
   const openList = async (sessionID: string) => {
@@ -126,9 +136,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
   const openCurrent = () => {
     const route = context.ui.router.current()
     if (route.type !== "session") return context.ui.toast.show({ message: "Open a session first", variant: "warning" })
-    void openList(route.sessionID).catch((error) =>
-      context.ui.toast.show({ message: error instanceof Error ? error.message : String(error), variant: "error" }),
-    )
+    void openList(route.sessionID).catch(showError)
   }
 
   const stopEvents = api.events.on("changed", (event) => {
@@ -198,7 +206,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
             setWidth(this.width)
           }}
         >
-          <box flexDirection="row" flexShrink={0} onMouseUp={() => void openList(props.sessionID)}>
+          <box flexDirection="row" flexShrink={0} onMouseUp={() => void openList(props.sessionID).catch(showError)}>
             <text fg={theme().text.base}>
               <b>Results</b>
             </text>
@@ -215,7 +223,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
             )}
           </For>
           <Show when={reports().length > MAX_SIDEBAR_ITEMS}>
-            <box height={1} flexShrink={0} onMouseUp={() => void openList(props.sessionID)}>
+            <box height={1} flexShrink={0} onMouseUp={() => void openList(props.sessionID).catch(showError)}>
               <text fg={theme().text.muted}>{`… ${reports().length - MAX_SIDEBAR_ITEMS} more (/results)`}</text>
             </box>
           </Show>
@@ -253,6 +261,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
         return data ? NativeImage.load(new Uint8Array(Buffer.from(data, "base64")), { owner }) : undefined
       },
       undefined,
+      { discard: (late) => late?.dispose() },
     )
     let previous: NativeImage | undefined
     createEffect(() => {
@@ -339,6 +348,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
       () => ({ target: props.target, version: version() }),
       ({ target }) => fetchReport(target),
       undefined as Report | undefined,
+      { onError: showError },
     )
     const sections = createMemo(() => splitSections(report()?.markdown ?? ""))
     const outline = createMemo(() =>

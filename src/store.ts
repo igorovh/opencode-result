@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -42,7 +42,7 @@ async function readSource(src: string, base: string, signal?: AbortSignal) {
     return {
       bytes: src.slice(0, comma).endsWith(";base64")
         ? new Uint8Array(Buffer.from(payload, "base64"))
-        : new TextEncoder().encode(decodeURIComponent(payload)),
+        : new Uint8Array(Buffer.from(payload.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "latin1")),
       name: "image",
     }
   }
@@ -50,6 +50,7 @@ async function readSource(src: string, base: string, signal?: AbortSignal) {
     const timeout = AbortSignal.timeout(FETCH_TIMEOUT)
     const response = await fetch(src, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (Number(response.headers.get("content-length")) > MAX_IMAGE_BYTES) throw new Error("larger than 64 MiB")
     return { bytes: new Uint8Array(await response.arrayBuffer()), name: path.basename(new URL(src).pathname) }
   }
   let file = src.startsWith("file:") ? fileURLToPath(src) : src
@@ -59,7 +60,18 @@ async function readSource(src: string, base: string, signal?: AbortSignal) {
 }
 
 export class Store {
+  private locks = new Map<string, Promise<unknown>>()
+
   constructor(readonly root: string) {}
+
+  /** Runs read-modify-write updates of one report one at a time. */
+  private exclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const run = (this.locks.get(key) ?? Promise.resolve()).then(task, task)
+    const tail = run.catch(() => {})
+    this.locks.set(key, tail)
+    void tail.then(() => this.locks.get(key) === tail && this.locks.delete(key))
+    return run
+  }
 
   private dir(sessionID: string, reportID?: string) {
     const safe = (id: unknown) => typeof id === "string" && SAFE_ID.test(id)
@@ -141,6 +153,10 @@ export class Store {
     base: string
     signal?: AbortSignal
   }): Promise<Report> {
+    return this.exclusive(this.dir(input.sessionID, input.reportID), () => this.appendNow(input))
+  }
+
+  private async appendNow(input: Parameters<Store["append"]>[0]): Promise<Report> {
     const current = await this.get(input.sessionID, input.reportID)
     if (!current) throw new Error(`Report ${input.reportID} not found in this session. Use result_list to see reports.`)
     const added = input.markdown?.trim()
@@ -161,7 +177,10 @@ export class Store {
 
   private async write(report: Report) {
     const { dir, ...stored } = report
-    await writeFile(path.join(dir, "report.json"), JSON.stringify(stored, null, 2))
+    // Write then rename, so a crash never leaves a half-written report.json behind.
+    const temp = path.join(dir, `report.json.${process.pid}.tmp`)
+    await writeFile(temp, JSON.stringify(stored, null, 2))
+    await rename(temp, path.join(dir, "report.json"))
   }
 
   /** Copies every referenced image into the report and points the markdown at the copies. */

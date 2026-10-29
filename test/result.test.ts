@@ -43,6 +43,13 @@ describe("splitMarkdown", () => {
     ])
   })
 
+  test("leaves image syntax inside inline code alone", () => {
+    expect(splitMarkdown("Embed with `![caption](path)` or ``![a](b)``, like ![real](z.png)")).toEqual([
+      { type: "markdown", text: "Embed with `![caption](path)` or ``![a](b)``, like" },
+      { type: "image", alt: "real", src: "z.png" },
+    ])
+  })
+
   test("splitSections starts a block at each heading, ignoring code fences", () => {
     const sections = splitSections("Intro\n## Changes\n- a\n```\n# not a heading\n```\n![shot](s.png)\n### Notes **bold**\ntext")
     expect(sections).toEqual([
@@ -126,6 +133,39 @@ describe("Store", () => {
 
     await expect(attempt).rejects.toThrow(/2 image\(s\)[\s\S]*missing\.png[\s\S]*notes\.txt: not a PNG/)
     expect(await store.list(["ses_1"])).toEqual([])
+  })
+
+  test("concurrent appends keep every image and every paragraph", async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "result-test-"))
+    await writeFile(path.join(root, "a.png"), png(10, 10))
+    const store = new Store(path.join(root, "store"))
+    const report = await store.create({ sessionID: "ses_1", title: "T", status: "success", markdown: "start", base: root })
+
+    await Promise.all(
+      [1, 2, 3].map((n) =>
+        store.append({ sessionID: "ses_1", reportID: report.id, markdown: `part ${n}
+![n${n}](a.png)`, base: root }),
+      ),
+    )
+
+    const final = (await store.get("ses_1", report.id))!
+    expect(final.images.map((image) => image.file)).toEqual(["images/01-a.png", "images/02-a.png", "images/03-a.png"])
+    for (const n of [1, 2, 3]) expect(final.markdown).toContain(`part ${n}`)
+  })
+
+  test("decodes percent-encoded data URLs as raw bytes", async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "result-test-"))
+    const bytes = png(3, 2)
+    const encoded = [...bytes].map((byte) => "%" + byte.toString(16).padStart(2, "0")).join("")
+    const store = new Store(path.join(root, "store"))
+    const report = await store.create({
+      sessionID: "ses_1",
+      title: "T",
+      status: "success",
+      markdown: `![x](data:image/png,${encoded})`,
+      base: root,
+    })
+    expect(report.images[0]).toMatchObject({ width: 3, height: 2 })
   })
 
   test("rejects IDs that would escape the store", async () => {
