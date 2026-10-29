@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { Context, KeymapLayer, PanelInput, SlotClaim } from "@opencode/plugin/tui/context"
+import type { Context, KeymapLayer, Page, Route, SlotClaim } from "@opencode/plugin/tui/context"
 import { RGBA, type CliRenderer } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { Show, createSignal } from "solid-js"
@@ -36,11 +36,11 @@ function png(width: number, height: number) {
 let root: string
 afterEach(() => rm(root, { recursive: true, force: true }))
 
-async function setup() {
+async function setup(height = 40) {
   root = await mkdtemp(path.join(os.tmpdir(), "result-tui-"))
   await writeFile(
     path.join(root, "shot.png"),
-    process.env.REAL_IMAGE ? await Bun.file(process.env.REAL_IMAGE).bytes() : png(400, 200),
+    process.env.REAL_IMAGE ? await Bun.file(process.env.REAL_IMAGE).bytes() : png(1600, 1200),
   )
   const store = new Store(path.join(root, "store"))
   const report = await store.create({
@@ -55,7 +55,8 @@ async function setup() {
   const layers: KeymapLayer[] = []
   const claims: SlotClaim[] = []
   const toasts: string[] = []
-  const [panel, setPanel] = createSignal<string>()
+  const pages: Page[] = []
+  const [route, setRoute] = createSignal<Route>({ type: "session", sessionID: "ses_a" })
 
   const rpc = {
     list: async ({ sessionIDs }: { sessionIDs: string[] }) => ({ reports: await store.list(sessionIDs) }),
@@ -78,10 +79,10 @@ async function setup() {
       ui: {
         slot: (claim: SlotClaim) => (claims.push(claim), () => {}),
         toast: { show: (options: { message: string }) => toasts.push(options.message) },
-        panel: {
-          open: (name: string) => (setPanel(name), true),
-          close: () => setPanel(undefined),
-          current: () => (panel() ? { name: panel()!, sessionID: "ses_a" } : undefined),
+        router: {
+          register: (page: Page) => (pages.push(page), () => {}),
+          navigate: (destination: Route) => setRoute(destination),
+          current: route,
         },
         dialog: {},
       },
@@ -90,40 +91,31 @@ async function setup() {
   function Host() {
     void plugin.setup(context(useRenderer()))
     const sidebar = claims.find((claim) => claim.append === "sidebar.content")!
-    const panelClaim = claims.find((claim) => claim.append === "session.panel")!
-    const input = (): PanelInput => ({
-      name: panel() ?? "",
-      sessionID: "ses_a",
-      width: 50,
-      presentation: "panel",
-      focused: true,
-      focus: () => {},
-      close: () => setPanel(undefined),
-      toggleFullscreen: () => {},
-    })
     return (
-      <box flexDirection="row" width={90} height={40}>
-        <box width={50} height={40}>
-          <Show when={panel()}>{(panelClaim.render as (input: PanelInput) => any)(input())}</Show>
-        </box>
-        <box width={38} flexDirection="column">
-          {(sidebar.render as (input: { sessionID: string }) => any)({ sessionID: "ses_a" })}
-        </box>
-      </box>
+      <Show
+        when={route().type === "plugin"}
+        fallback={
+          <box width={38} flexDirection="column">
+            {(sidebar.render as (input: { sessionID: string }) => any)({ sessionID: "ses_a" })}
+          </box>
+        }
+      >
+        {pages[0]!.render({ data: (route() as { data?: Record<string, any> }).data })}
+      </Show>
     )
   }
 
-  const rendered = await testRender(() => <Host />, { width: 90, height: 40 })
+  const rendered = await testRender(() => <Host />, { width: 90, height })
   const settle = async () => {
-    for (let i = 0; i < 5; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 20))
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 40))
       await rendered.renderOnce()
     }
   }
-  return { ...rendered, report, layers, listeners, toasts, settle }
+  return { ...rendered, report, layers, listeners, toasts, settle, route }
 }
 
-test("sidebar lists reports and a click opens the report with its image", async () => {
+test("sidebar lists reports and a click opens the report full screen", async () => {
   const ui = await setup()
   await ui.settle()
   let frame = ui.captureCharFrame()
@@ -140,7 +132,7 @@ test("sidebar lists reports and a click opens the report with its image", async 
   if (process.env.SHOW_FRAME) console.log(frame)
   expect(frame).toContain("Changes")
   expect(frame).toContain("Added toggle")
-  expect(frame).toContain("Settings page")
+  expect(ui.route()).toMatchObject({ type: "plugin", name: "result", data: { sessionID: "ses_a", reportID: ui.report.id } })
   ui.renderer.destroy()
 })
 
@@ -150,5 +142,27 @@ test("a created event shows a toast", async () => {
   for (const listener of ui.listeners)
     listener({ data: { sessionID: "ses_a", reportID: ui.report.id, title: "Dark mode", created: true } })
   expect(ui.toasts).toEqual(["Dark mode"])
+  ui.renderer.destroy()
+})
+
+test("only fully visible images are drawn, and none while scrolling", async () => {
+  const ui = await setup(24)
+  await ui.settle()
+  const lines = ui.captureCharFrame().split("\n")
+  const y = lines.findIndex((line) => line.includes("Dark mode"))
+  await ui.mockMouse.click(lines[y]!.indexOf("Dark mode"), y)
+  await ui.settle()
+  // The image starts below the fold, so it would be clipped.
+  expect(ui.captureCharFrame()).toContain("▣ scroll to show")
+
+  const scrollDown = ui.layers.at(-1)!.commands!.find((command) => command.title === "Scroll down")!
+  for (let i = 0; i < 6; i++) void scrollDown.run()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await ui.renderOnce()
+  expect(ui.captureCharFrame()).toContain("▣ scroll to show")
+
+  await ui.settle()
+  expect(ui.captureCharFrame()).not.toContain("▣ scroll to show")
+  expect(ui.captureCharFrame()).toContain("Settings page")
   ui.renderer.destroy()
 })
