@@ -38,15 +38,17 @@ temporary screenshots can be deleted afterwards. A missing or invalid image fail
 
 ## TUI
 
-- **Sidebar:** a `Results` list under the other sidebar sections. Click a report to open it in a large dialog;
+- **Sidebar:** a `Results` list under the other sidebar sections. Click a report to open it in a large window
+  (nearly the whole terminal, up to 220 columns);
   `Esc` closes it and you are back in the session.
 - **`/results`** (or the command palette, or the `Results` heading) first lists the session's reports. Pick one to open
   it; `Esc` in the report goes back to the list, and `Esc` in the list closes it.
 - **Report dialog:** content on the left, a clickable table of contents (headings and images) on the right.
   `↑`/`↓`, `Space`/`b`, `PgUp`/`PgDn` and the accelerated mouse wheel scroll; `n`/`p` jump between sections; `o` opens
   the report folder. Click an image to open it in the system viewer.
-- Images are always drawn. While they move or are cut off they use colored blocks, which clip cleanly; once scrolling
-  stops, every fully visible image switches to full quality (Kitty or Sixel).
+- Images are always drawn in full quality (Kitty or Sixel) once scrolling stops. Terminal graphics cannot be clipped,
+  so an image that is partly scrolled out is cropped to its visible rows. While scrolling, images use colored blocks,
+  which clip cleanly.
 - A toast appears when the agent publishes a new report.
 
 Images render with OpenTUI's `<image>`: Kitty graphics, then Sixel, then colored Unicode blocks. Force a protocol with

@@ -6,20 +6,22 @@ import { Plugin } from "@opencode/plugin/tui"
 import type { Context } from "@opencode/plugin/tui/context"
 import {
   MacOSScrollAccel,
+  NativeImage,
+  RGBA,
   type BoxRenderable,
   type MouseEvent,
   type ScrollBoxRenderable,
   type SyntaxStyle,
 } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
+import { Portal, useTerminalDimensions } from "@opentui/solid"
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
 import { splitSections, type Section } from "./markdown"
 import { ResultRpc, type Report, type ReportChanged, type ReportStatus, type ReportSummary } from "./rpc"
 import { markdownSyntax } from "./syntax"
 
 const MAX_SIDEBAR_ITEMS = 8
-const DIALOG_WIDTH = 116
-const LEGEND_WIDTH = 32
+const MAX_WIDTH = 220
+const LEGEND_WIDTH = 34
 const SCROLL_STEP = 2
 // Images switch from blocks to full quality this long after scrolling stops.
 const SCROLL_SETTLE_MS = 120
@@ -90,17 +92,19 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     return { char: "●", color: feedback.success.base }
   }
 
+  const [shown, setShown] = createSignal<{ ref: Ref; fromList: boolean }>()
+
   /** Opens one report. Opened from the list, closing it returns to the list; otherwise to the session. */
   const open = (ref: Ref, fromList = false) => {
-    context.ui.dialog.show(
-      () => <ReportDialog target={ref} fromList={fromList} />,
-      () => {
-        repaint()
-        // Let the host finish closing this dialog before it shows the next one.
-        if (fromList) setTimeout(() => void openList(ref.sessionID))
-      },
-    )
-    context.ui.dialog.set({ size: "xlarge", centered: true })
+    context.ui.dialog.clear()
+    setShown({ ref, fromList })
+  }
+
+  const close = () => {
+    const current = shown()
+    setShown(undefined)
+    repaint()
+    if (current?.fromList) setTimeout(() => void openList(current.ref.sessionID))
   }
 
   const openList = async (sessionID: string) => {
@@ -220,47 +224,77 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     )
   }
 
+  type Visible = "moving" | { from: number; to: number }
+
   function ImageBlock(props: {
     report: Report
     file: string
     alt: string
     width: number
     maxHeight: number
-    crisp: (box: BoxRenderable | undefined) => boolean
+    visible: (box: BoxRenderable | undefined, height: number) => Visible
   }) {
     const info = () => props.report.images.find((image) => image.file === props.file)
     const local = createMemo(() => {
       const file = path.join(props.report.dir, props.file)
       return existsSync(file) ? file : undefined
     })
+    const owner = context.renderer.nativeScene.resourceContext
     // A remote server's files are not on this machine, so fetch the bytes over RPC.
-    const source = asyncValue(
+    const image = asyncValue(
       () => ({ report: props.report, file: props.file, local: local() }),
-      async (input): Promise<string | Uint8Array | undefined> => {
-        if (input.local) return input.local
+      async (input): Promise<NativeImage | undefined> => {
+        if (input.local) return NativeImage.load(input.local, { owner })
         const { data } = (await api.image({
           sessionID: input.report.sessionID,
           reportID: input.report.id,
           file: input.file,
         })) as { data?: string }
-        return data ? new Uint8Array(Buffer.from(data, "base64")) : undefined
+        return data ? NativeImage.load(new Uint8Array(Buffer.from(data, "base64")), { owner }) : undefined
       },
       undefined,
     )
+    let previous: NativeImage | undefined
+    createEffect(() => {
+      const current = image()
+      if (previous && previous !== current) previous.dispose()
+      previous = current
+    })
     // Cells are about twice as tall as wide; never wider than the image itself.
     const size = createMemo(() => {
-      const image = info()
+      const meta = info()
       const maxHeight = Math.max(4, props.maxHeight)
-      if (!image?.width || !image.height) return { width: props.width, height: Math.min(maxHeight, 12) }
-      let width = Math.min(props.width, Math.ceil(image.width / 8))
-      let height = Math.round((width * image.height) / image.width / 2)
+      if (!meta?.width || !meta.height) return { width: props.width, height: Math.min(maxHeight, 12) }
+      let width = Math.min(props.width, Math.ceil(meta.width / 8))
+      let height = Math.round((width * meta.height) / meta.width / 2)
       if (height > maxHeight) {
         height = maxHeight
-        width = Math.round((height * 2 * image.width) / image.height)
+        width = Math.round((height * 2 * meta.width) / meta.height)
       }
       return { width: Math.max(4, width), height: Math.max(2, height) }
     })
     let box: BoxRenderable | undefined
+    // Terminal graphics cannot be clipped, so a partly visible image shows only its visible rows, cropped.
+    let crop: NativeImage | undefined
+    const view = createMemo(() => {
+      const source = image()
+      if (!source) return undefined
+      const height = size().height
+      const visible = props.visible(box, height)
+      crop?.dispose()
+      crop = undefined
+      if (visible === "moving" || visible.to <= visible.from)
+        return { source, protocol: "blocks" as const, from: 0, rows: height }
+      if (visible.from === 0 && visible.to === height) return { source, protocol: "auto" as const, from: 0, rows: height }
+      const top = Math.round((source.height * visible.from) / height)
+      const bottom = Math.max(top + 1, Math.round((source.height * visible.to) / height))
+      crop = source.extract({ left: 0, top, width: source.width, height: Math.min(source.height, bottom) - top })
+      return { source: crop, protocol: "auto" as const, from: visible.from, rows: visible.to - visible.from }
+    })
+    onCleanup(() => {
+      crop?.dispose()
+      previous?.dispose()
+    })
     return (
       <box flexDirection="column" flexShrink={0}>
         <box
@@ -273,15 +307,17 @@ function createUI(context: Context, syntax: SyntaxStyle) {
             if (event.button === 0 && file) openExternal(file)
           }}
         >
-          <Show when={source()} fallback={<text fg={theme().text.muted}>Loading image…</text>}>
-            {/* Blocks are plain cells, so they clip cleanly while the image is moving or cut off. */}
-            <image
-              source={source()}
-              fit="fit"
-              protocol={props.crisp(box) ? "auto" : "blocks"}
-              width={size().width}
-              height={size().height}
-            />
+          <Show when={view()} fallback={<text fg={theme().text.muted}>Loading image…</text>}>
+            {(current) => (
+              <image
+                source={current().source}
+                fit="fill"
+                protocol={current().protocol}
+                width={size().width}
+                height={current().rows}
+                marginTop={current().from}
+              />
+            )}
           </Show>
         </box>
         <Show when={props.alt}>
@@ -294,9 +330,8 @@ function createUI(context: Context, syntax: SyntaxStyle) {
   }
 
   function ReportDialog(props: { target: Ref; fromList: boolean }) {
-    context.ui.dialog.set({ size: "xlarge", centered: true })
     const dimensions = useTerminalDimensions()
-    const width = () => Math.min(DIALOG_WIDTH, dimensions().width - 2) - 4
+    const width = () => Math.min(MAX_WIDTH, dimensions().width - 8)
     const height = () => Math.max(12, dimensions().height - 6)
     const contentWidth = () => Math.max(20, width() - LEGEND_WIDTH - 3)
 
@@ -352,11 +387,13 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     })
     createEffect(on(scrolling, repaint, { defer: true }))
 
-    const crisp = (box: BoxRenderable | undefined) => {
+    const visible = (box: BoxRenderable | undefined, rows: number): Visible => {
       layoutTick()
-      if (scrolling() || !box || !scroll || box.isDestroyed) return false
+      if (scrolling() || !box || !scroll || box.isDestroyed) return "moving"
       const viewport = scroll.viewport
-      return box.screenY >= viewport.screenY && box.screenY + box.height <= viewport.screenY + viewport.height
+      const from = Math.max(0, viewport.screenY - box.screenY)
+      const to = Math.min(rows, viewport.screenY + viewport.height - box.screenY)
+      return { from, to: Math.max(from, to) }
     }
 
     const jumpTo = (index: number) => {
@@ -379,6 +416,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
       mode: "modal",
       priority: 50,
       commands: [
+        { title: props.fromList ? "Back to results" : "Close result", group: "Results", bind: "escape,q", run: close },
         { title: "Scroll up", group: "Results", bind: "up,k", run: () => scroll?.scrollBy(-SCROLL_STEP) },
         { title: "Scroll down", group: "Results", bind: "down,j", run: () => scroll?.scrollBy(SCROLL_STEP) },
         { title: "Page up", group: "Results", bind: "pageup,b", run: () => scroll?.scrollBy(-page()) },
@@ -453,8 +491,8 @@ function createUI(context: Context, syntax: SyntaxStyle) {
                                 file={image().src}
                                 alt={image().alt}
                                 width={contentWidth() - 2}
-                                maxHeight={height() - 6}
-                                crisp={crisp}
+                                maxHeight={height() - 8}
+                                visible={visible}
                               />
                             )}
                           </Match>
@@ -503,7 +541,72 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     )
   }
 
-  return { Sidebar, open, openCurrent, stopEvents }
+  /** Our own modal instead of the host dialog, which is at most 116 columns wide. */
+  function Overlay() {
+    const dimensions = useTerminalDimensions()
+    createEffect(() => {
+      if (!shown()) return
+      // Like the host dialog: take focus from the prompt and route keys to modal layers.
+      const focused = context.renderer.currentFocusedRenderable
+      focused?.blur()
+      const pop = context.keymap.mode.push("modal")
+      onCleanup(() => {
+        pop()
+        if (focused && !focused.isDestroyed) focused.focus()
+      })
+    })
+    const stop = (event: MouseEvent) => event.stopPropagation()
+    return (
+      <Show when={shown()} keyed>
+        {(current) => (
+          <Portal
+            mount={context.renderer.root}
+            ref={(element) => {
+              // Portal wraps its content in a flex child; pin that wrapper over the whole screen.
+              const container = element as BoxRenderable
+              container.position = "absolute"
+              container.left = 0
+              container.top = 0
+              container.zIndex = 1000
+            }}
+          >
+            <box
+              position="absolute"
+              left={0}
+              top={0}
+              zIndex={1000}
+              width={dimensions().width}
+              height={dimensions().height}
+              backgroundColor={RGBA.fromValues(0, 0, 0, 0.55)}
+              justifyContent="center"
+              alignItems="center"
+              onMouseDown={stop}
+              onMouseUp={(event: MouseEvent) => {
+                stop(event)
+                if (event.target === event.currentTarget) close()
+              }}
+              onMouseScroll={stop}
+            >
+              <box
+                backgroundColor={theme().background.raised.base}
+                border
+                borderStyle="rounded"
+                borderColor={theme().text.muted}
+                paddingLeft={2}
+                paddingRight={2}
+                paddingTop={1}
+                onMouseUp={stop}
+              >
+                <ReportDialog target={current.ref} fromList={current.fromList} />
+              </box>
+            </box>
+          </Portal>
+        )}
+      </Show>
+    )
+  }
+
+  return { Sidebar, Overlay, open, openCurrent, stopEvents }
 }
 
 export default Plugin.define({
@@ -512,6 +615,7 @@ export default Plugin.define({
     const syntax = markdownSyntax(context.theme, context.renderer.nativeScene)
     const ui = createUI(context, syntax)
 
+    const stopOverlay = context.ui.slot({ append: "app", render: () => <ui.Overlay /> })
     const stopSidebar = context.ui.slot({
       append: "sidebar.content",
       render: (input) => <ui.Sidebar sessionID={input.sessionID} />,
@@ -534,6 +638,7 @@ export default Plugin.define({
     return () => {
       ui.stopEvents()
       stopSidebar()
+      stopOverlay()
       void context.renderer.idle().then(() => syntax.destroy())
     }
   },
