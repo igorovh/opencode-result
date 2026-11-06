@@ -93,8 +93,8 @@ async function setup(height = 40) {
   )
   const store = new Store(path.join(root, "store"))
   const older = await store.create({ sessionID: "ses_a", title: "Older run", status: "partial", markdown: "Old notes", base: root })
-  // Reports sort by creation time, so keep the two apart.
-  await new Promise((resolve) => setTimeout(resolve, 5))
+  // Reports sort by createdAt; equal values order at random, and the overlay leaves the top sidebar rows visible.
+  while (Date.now() <= older.createdAt) await new Promise((resolve) => setTimeout(resolve, 1))
   const report = await store.create({ sessionID: "ses_a", title: "Dark mode", status: "success", markdown: MARKDOWN, base: root })
 
   const listeners: ((event: { data: unknown }) => void)[] = []
