@@ -7,7 +7,14 @@ large window right in the terminal, images included.
 > Supports OpenCode V2 2.2.5 or newer. V1 is not supported.
 
 <p align="center">
-  <img src="docs/report.png" alt="A result report with a screenshot and a clickable table of contents" width="1000">
+  <img src="docs/demo.gif" alt="Results in the sidebar, the /results list, and a report with a screenshot and a table of contents" width="1000">
+</p>
+
+The demo shows the Results section in the sidebar, the `/results` list, and a report window where `n` jumps
+between sections; the recording terminal draws images with blocks, while Kitty or Sixel terminals show them sharp, as below.
+
+<p align="center">
+  <img src="docs/report.png" alt="A result report with a sharp screenshot and a clickable table of contents" width="1000">
 </p>
 
 ## Features
