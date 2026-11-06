@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { Plugin } from "@opencode/plugin"
 import { ResultRpc, type Report, type ReportStatus } from "./rpc"
-import { Store, defaultRoot } from "./store"
+import { Store, resolveRoot } from "./store"
 
 const STATUSES = ["success", "partial", "failed", "info"] as const
 
@@ -20,7 +20,7 @@ function describe(report: Report, verb: string) {
 export default Plugin.define({
   id: "result",
   async setup(ctx) {
-    const store = new Store(typeof ctx.options.dir === "string" ? ctx.options.dir : defaultRoot())
+    const store = new Store(resolveRoot(ctx.options.dir))
 
     const directoryOf = async (sessionID: string) => {
       try {
@@ -44,13 +44,6 @@ export default Plugin.define({
         const { sessionID, reportID, file } = input as { sessionID: string; reportID: string; file: string }
         const found = await store.imagePath(sessionID, reportID, file)
         return found ? { data: (await readFile(found)).toString("base64") } : {}
-      },
-      remove: async (input) => {
-        const { sessionID, reportID } = input as { sessionID: string; reportID: string }
-        const report = await store.get(sessionID, reportID)
-        await store.remove(sessionID, reportID)
-        if (report) await rpc.events.emit("changed", { sessionID, reportID, title: report.title, created: false })
-        return {}
       },
     })
 
@@ -150,7 +143,7 @@ export default Plugin.define({
       })
     })
 
-    if (ctx.options.remind !== false)
+    if (ctx.options.remind === true)
       await ctx.session.hook("context", (event) => {
         event.system.push({ type: "text", text: REMINDER })
       })

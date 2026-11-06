@@ -63,10 +63,6 @@ export const ResultRpc = Rpc.define({
       input: { ...ref, properties: { ...ref.properties, file: { type: "string" } }, required: [...ref.required, "file"] },
       output: { type: "object", properties: { data: { type: "string" } } },
     },
-    remove: {
-      input: ref,
-      output: object,
-    },
   },
   events: {
     changed: {
