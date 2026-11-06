@@ -8,8 +8,11 @@ import type { Context, KeymapLayer, SlotClaim } from "@opencode/plugin/tui/conte
 import { RGBA, type CliRenderer } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { Show, createSignal, type JSX } from "solid-js"
-import plugin from "../src/tui"
+import type sourcePlugin from "../src/tui"
 import { Store } from "../src/store"
+
+// test/install.test.ts points this at a copy installed under node_modules.
+const plugin: typeof sourcePlugin = (await import(process.env.RESULT_TUI ?? "../src/tui")).default
 
 // Every theme token resolves to the same grey, whatever its path.
 function fakeTheme(): any {
@@ -108,7 +111,6 @@ async function setup(height = 40) {
       report: await store.get(sessionID, reportID),
     }),
     image: async () => ({}),
-    remove: async () => ({}),
     events: { on: (_: string, listener: (event: { data: unknown }) => void) => (listeners.push(listener), () => {}) },
   }
 
