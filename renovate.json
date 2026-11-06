@@ -1,19 +1,38 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "schedule": ["before 6am on monday"],
+  "dependencyDashboard": true,
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "rebaseWhen": "behind-base-branch",
+  "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "schedule": ["before 6am on monday"]
+  },
   "packageRules": [
+    {
+      "description": "Minor, patch, pin and digest updates merge on green CI.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Major updates merge too, but only on green CI: the ruleset requires every check, so a red major stays open.",
+      "matchUpdateTypes": ["major"],
+      "automerge": true
+    },
     {
       "description": "Peer ranges set the minimum supported OpenCode; change them by hand.",
       "matchDepTypes": ["peerDependencies"],
       "enabled": false
     },
     {
-      "description": "Dev versions mirror the OpenCode host, so update them together with a new OpenCode release.",
+      "description": "Dev versions mirror the OpenCode host, so update them together. CI rebuilds dist/ on the PR when needed.",
       "matchDepTypes": ["devDependencies"],
       "matchPackageNames": ["@opencode/plugin", "@opencode/theme", "@opentui/core", "@opentui/solid", "solid-js"],
-      "groupName": "OpenCode host modules",
-      "prBodyNotes": ["Run `bun run compile` and commit `dist/` before merging; CI fails while `dist/` is stale."]
+      "groupName": "OpenCode host modules"
     },
     {
       "matchManagers": ["github-actions"],
