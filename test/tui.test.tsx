@@ -172,6 +172,12 @@ async function setup(height = 40) {
       await rendered.renderOnce()
     }
   }
+  // Slow CI runners need more than one settle for the report to load and lay out.
+  const waitFor = async (text: string) => {
+    for (let i = 0; i < 20 && !rendered.captureCharFrame().includes(text); i++) await settle()
+    expect(rendered.captureCharFrame()).toContain(text)
+    await settle()
+  }
   const command = (title: string) => layers.at(-1)!.commands!.find((item) => item.title === title)!
   const clickText = async (text: string) => {
     const lines = rendered.captureCharFrame().split("\n")
@@ -188,14 +194,14 @@ async function setup(height = 40) {
   const open = () => modes.includes("modal")
   const setPick = (next: typeof pick) => (pick = next)
   const slash = () => layers.find((layer) => layer.commands?.some((item) => item.id === "result.open"))!.commands![0]!
-  return { ...rendered, report, older, layers, listeners, toasts, settle, command, clickText, escape, selects, setPick, slash, dialog, open }
+  return { ...rendered, report, older, layers, listeners, toasts, settle, waitFor, command, clickText, escape, selects, setPick, slash, dialog, open }
 }
 
 test("a sidebar report opens in a dialog with a contents legend, and escape returns to the session", async () => {
   const ui = await setup()
-  await ui.settle()
-  expect(ui.captureCharFrame()).toContain("Results")
+  await ui.waitFor("Results")
   await ui.clickText("Dark mode")
+  await ui.waitFor("Added toggle")
 
   const frame = ui.captureCharFrame()
   if (process.env.SHOW_FRAME) console.log(frame)
@@ -237,8 +243,9 @@ test("/results lists reports first, and escape from a report goes back to that l
 
 test("legend entries and n/p scroll to their section", async () => {
   const ui = await setup(30)
-  await ui.settle()
+  await ui.waitFor("Dark mode")
   await ui.clickText("Dark mode")
+  await ui.waitFor("Added toggle")
   expect(ui.captureCharFrame()).not.toContain("The end")
 
   await ui.clickText("Last section")
@@ -255,8 +262,9 @@ test("legend entries and n/p scroll to their section", async () => {
 
 test("a partly visible image is cropped to its visible rows and drawn in full quality", async () => {
   const ui = await setup(30)
-  await ui.settle()
+  await ui.waitFor("Dark mode")
   await ui.clickText("Dark mode")
+  await ui.waitFor("Added toggle")
   const [full] = images(ui.renderer.root)
   expect(full).toMatchObject({ protocol: "auto" })
 
