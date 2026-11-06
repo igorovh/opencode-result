@@ -93,6 +93,8 @@ async function setup(height = 40) {
   )
   const store = new Store(path.join(root, "store"))
   const older = await store.create({ sessionID: "ses_a", title: "Older run", status: "partial", markdown: "Old notes", base: root })
+  // Reports sort by creation time, so keep the two apart.
+  await new Promise((resolve) => setTimeout(resolve, 5))
   const report = await store.create({ sessionID: "ses_a", title: "Dark mode", status: "success", markdown: MARKDOWN, base: root })
 
   const listeners: ((event: { data: unknown }) => void)[] = []
@@ -173,8 +175,11 @@ async function setup(height = 40) {
     }
   }
   // Slow CI runners need more than one settle for the report to load and lay out.
+  const waitUntil = async (done: () => boolean) => {
+    for (let i = 0; i < 20 && !done(); i++) await settle()
+  }
   const waitFor = async (text: string) => {
-    for (let i = 0; i < 20 && !rendered.captureCharFrame().includes(text); i++) await settle()
+    await waitUntil(() => rendered.captureCharFrame().includes(text))
     expect(rendered.captureCharFrame()).toContain(text)
     await settle()
   }
@@ -194,7 +199,7 @@ async function setup(height = 40) {
   const open = () => modes.includes("modal")
   const setPick = (next: typeof pick) => (pick = next)
   const slash = () => layers.find((layer) => layer.commands?.some((item) => item.id === "result.open"))!.commands![0]!
-  return { ...rendered, report, older, layers, listeners, toasts, settle, waitFor, command, clickText, escape, selects, setPick, slash, dialog, open }
+  return { ...rendered, report, older, layers, listeners, toasts, settle, waitUntil, waitFor, command, clickText, escape, selects, setPick, slash, dialog, open }
 }
 
 test("a sidebar report opens in a dialog with a contents legend, and escape returns to the session", async () => {
@@ -213,6 +218,7 @@ test("a sidebar report opens in a dialog with a contents legend, and escape retu
   expect(frame).not.toContain("Older run")
   expect(ui.layers.at(-1)!.mode).toBe("modal")
   // Settled and fully visible, so the image leaves the block fallback.
+  await ui.waitUntil(() => imageProtocols(ui.renderer.root)[0] === "auto")
   expect(imageProtocols(ui.renderer.root)).toEqual(["auto"])
   expect(frame).toContain("esc close")
 
@@ -265,6 +271,7 @@ test("a partly visible image is cropped to its visible rows and drawn in full qu
   await ui.waitFor("Dark mode")
   await ui.clickText("Dark mode")
   await ui.waitFor("Added toggle")
+  await ui.waitUntil(() => imageProtocols(ui.renderer.root)[0] === "auto")
   const [full] = images(ui.renderer.root)
   expect(full).toMatchObject({ protocol: "auto" })
 

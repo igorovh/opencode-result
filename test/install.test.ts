@@ -24,6 +24,7 @@ test("the TUI renders when installed under node_modules", async () => {
       stderr: "pipe",
     })
     const [stderr, exit] = await Promise.all([new Response(child.stderr).text(), child.exited])
+    if (exit !== 0) console.error(stderr)
     expect({ exit, failed: stderr.match(/^\(fail\).*$/gm) ?? [] }).toEqual({ exit: 0, failed: [] })
   } finally {
     await rm(temp, { recursive: true, force: true })
