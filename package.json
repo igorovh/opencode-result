@@ -1,9 +1,10 @@
 {
   "name": "opencode-result",
-  "version": "0.1.0",
-  "description": "Result reports for OpenCode sessions: markdown, links and images rendered in the TUI",
+  "version": "0.2.0",
+  "description": "Result reports for the OpenCode TUI: the agent publishes a markdown summary with links and screenshots, shown in the sidebar and a large in-terminal viewer",
   "type": "module",
   "license": "MIT",
+  "author": "igorovh",
   "private": true,
   "homepage": "https://github.com/igorovh/opencode-result#readme",
   "bugs": {
@@ -13,31 +14,41 @@
     "type": "git",
     "url": "git+https://github.com/igorovh/opencode-result.git"
   },
-  "keywords": ["opencode", "opencode-plugin", "tui"],
-  "files": ["src", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "opentui", "tui", "terminal", "report", "markdown", "screenshots", "kitty-graphics", "sixel"],
+  "engines": {
+    "opencode": ">=2.2.5"
+  },
+  "files": ["src", "dist", "README.md", "LICENSE"],
   "exports": {
     ".": "./src/index.ts",
-    "./tui": "./src/tui.tsx",
+    "./tui": "./dist/tui.js",
     "./rpc": "./src/rpc.ts"
   },
   "scripts": {
+    "compile": "bun script/compile.ts",
+    "check:dist": "bun script/check-dist.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
-  "dependencies": {
-    "@opencode/plugin": "^2.2.0"
-  },
   "peerDependencies": {
-    "@opentui/core": ">=0.6.6",
-    "@opentui/solid": ">=0.6.6",
+    "@opencode/plugin": ">=2.2.5",
+    "@opentui/core": ">=0.8.0",
+    "@opentui/solid": ">=0.8.0",
     "solid-js": ">=1.9.0"
   },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": { "optional": true },
+    "@opentui/core": { "optional": true },
+    "@opentui/solid": { "optional": true },
+    "solid-js": { "optional": true }
+  },
   "devDependencies": {
-    "@opencode/theme": "2.2.2",
-    "@opentui/core": "0.7.0",
-    "@opentui/solid": "0.7.0",
-    "@types/bun": "latest",
-    "solid-js": "^1.9.9",
-    "typescript": "^5.9.0"
+    "@opencode/plugin": "2.2.5",
+    "@opencode/theme": "2.2.5",
+    "@opentui/core": "0.8.2",
+    "@opentui/solid": "0.8.2",
+    "@types/bun": "1.4.4",
+    "solid-js": "1.9.18",
+    "typescript": "5.9.3"
   }
 }
