@@ -1,5 +1,5 @@
 // @bun
-// stale
+// src/tui.tsx
 import { memo as _$memo } from "@opentui/solid";
 import { use as _$use } from "@opentui/solid";
 import { createTextNode as _$createTextNode } from "@opentui/solid";
