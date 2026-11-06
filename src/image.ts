@@ -9,7 +9,7 @@ const ascii = (b: Uint8Array, i: number, length: number) => String.fromCharCode(
 /** Detects PNG, JPEG, GIF and WebP from their bytes and reads the pixel size. */
 export function sniffImage(bytes: Uint8Array): ImageKind | undefined {
   if (bytes.length < 16) return
-  if (u32be(bytes, 0) === 0x89504e47 && u32be(bytes, 4) === 0x0d0a1a0a)
+  if (u32be(bytes, 0) === 0x89504e47 && u32be(bytes, 4) === 0x0d0a1a0a && bytes.length >= 24)
     return { mime: "image/png", ext: "png", width: u32be(bytes, 16), height: u32be(bytes, 20) }
   if (ascii(bytes, 0, 4) === "GIF8")
     return { mime: "image/gif", ext: "gif", width: u16le(bytes, 6), height: u16le(bytes, 8) }

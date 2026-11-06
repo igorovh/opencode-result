@@ -41,14 +41,23 @@ function formatTime(time: number) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`
 }
 
-function openExternal(target: string) {
-  const [command, args] =
+/** Opens a file or folder in the system app. Tries each opener in turn; `onError` runs when none exists. */
+function openExternal(target: string, onError: (message: string) => void) {
+  const openers =
     process.platform === "win32"
-      ? ["explorer.exe", [target]]
+      ? ["explorer.exe"]
       : process.platform === "darwin"
-        ? ["open", [target]]
-        : ["xdg-open", [target]]
-  spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => {}).unref()
+        ? ["open"]
+        : ["xdg-open", "wslview", "gio"]
+  const attempt = (index: number) => {
+    const command = openers[index]
+    if (!command) return onError(`No program to open ${target}. Install xdg-utils.`)
+    const args = command === "gio" ? ["open", target] : [target]
+    spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true })
+      .on("error", () => attempt(index + 1))
+      .unref()
+  }
+  attempt(0)
 }
 
 /** Like createResource, but never suspends the host's UI while loading. `discard` frees stale results. */
@@ -243,7 +252,9 @@ function createUI(context: Context, syntax: SyntaxStyle) {
     visible: (box: BoxRenderable | undefined, height: number) => Visible
   }) {
     const info = () => props.report.images.find((image) => image.file === props.file)
+    // Only files listed in report.json, so an edited markdown path cannot point outside the report.
     const local = createMemo(() => {
+      if (!info()) return undefined
       const file = path.join(props.report.dir, props.file)
       return existsSync(file) ? file : undefined
     })
@@ -313,7 +324,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
           flexShrink={0}
           onMouseUp={(event: MouseEvent) => {
             const file = local()
-            if (event.button === 0 && file) openExternal(file)
+            if (event.button === 0 && file) openExternal(file, showError)
           }}
         >
           <Show when={view()} fallback={<text fg={theme().text.muted}>Loading image…</text>}>
@@ -441,7 +452,7 @@ function createUI(context: Context, syntax: SyntaxStyle) {
           bind: "o",
           run: () => {
             const dir = report()?.dir
-            if (dir && existsSync(dir)) openExternal(dir)
+            if (dir && existsSync(dir)) openExternal(dir, showError)
           },
         },
       ],

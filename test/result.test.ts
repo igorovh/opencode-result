@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { sniffImage } from "../src/image"
 import { joinMarkdown, splitMarkdown, splitSections } from "../src/markdown"
-import { Store } from "../src/store"
+import { Store, resolveRoot } from "../src/store"
 
 function png(width: number, height: number) {
   const bytes = new Uint8Array(33)
@@ -172,5 +172,72 @@ describe("Store", () => {
     root = await mkdtemp(path.join(os.tmpdir(), "result-test-"))
     const store = new Store(path.join(root, "store"))
     await expect(store.imagePath("..", "x", "images/01.png")).rejects.toThrow(/invalid/)
+  })
+
+  test("a failed append removes the images it already copied", async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "result-test-"))
+    await writeFile(path.join(root, "a.png"), png(10, 10))
+    const store = new Store(path.join(root, "store"))
+    const report = await store.create({ sessionID: "ses_1", title: "T", status: "success", markdown: "start", base: root })
+
+    const attempt = store.append({ sessionID: "ses_1", reportID: report.id, markdown: "![ok](a.png)\n![bad](missing.png)", base: root })
+
+    await expect(attempt).rejects.toThrow(/missing\.png/)
+    expect(await readdir(path.join(report.dir, "images"))).toEqual([])
+    expect((await store.get("ses_1", report.id))!.images).toEqual([])
+  })
+})
+
+describe("downloads", () => {
+  let root: string
+  let server: ReturnType<typeof Bun.serve>
+  afterEach(async () => {
+    server.stop(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  const serve = async (fetch: (request: Request) => Response) => {
+    root = await mkdtemp(path.join(os.tmpdir(), "result-test-"))
+    server = Bun.serve({ port: 0, fetch })
+    return { store: new Store(path.join(root, "store")), url: (pathname: string) => new URL(pathname, server.url).href }
+  }
+  const create = (store: Store, markdown: string) =>
+    store.create({ sessionID: "ses_1", title: "T", status: "success", markdown, base: root })
+
+  test("follows a redirect to the image", async () => {
+    const { store, url } = await serve((request) =>
+      new URL(request.url).pathname === "/old" ? Response.redirect(url("/shot.png"), 302) : new Response(png(4, 3)),
+    )
+    const report = await create(store, `![x](${url("/old")})`)
+    expect(report.images[0]).toMatchObject({ file: "images/01-shot.png", width: 4, height: 3 })
+  })
+
+  test("stops a redirect loop", async () => {
+    const { store, url } = await serve(() => Response.redirect(url("/loop"), 302))
+    await expect(create(store, `![x](${url("/loop")})`)).rejects.toThrow(/too many redirects/)
+  })
+
+  test("rejects a body over 64 MiB even without content-length", async () => {
+    const chunk = new Uint8Array(1024 * 1024)
+    const { store, url } = await serve(() => {
+      let sent = 0
+      const body = new ReadableStream({
+        pull(controller) {
+          if (sent++ > 70) return controller.close()
+          controller.enqueue(chunk)
+        },
+      })
+      return new Response(body)
+    })
+    await expect(create(store, `![x](${url("/big.png")})`)).rejects.toThrow(/larger than 64 MiB/)
+  })
+})
+
+describe("resolveRoot", () => {
+  test("expands ~ and resolves relative paths against the home directory", () => {
+    expect(resolveRoot("~/reports")).toBe(path.join(os.homedir(), "reports"))
+    expect(resolveRoot("reports")).toBe(path.join(os.homedir(), "reports"))
+    expect(resolveRoot(path.join(os.tmpdir(), "r"))).toBe(path.join(os.tmpdir(), "r"))
+    expect(resolveRoot(undefined)).toMatch(/opencode[/\\]result$/)
   })
 })

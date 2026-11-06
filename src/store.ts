@@ -8,11 +8,53 @@ import type { Report, ReportImage, ReportStatus, ReportSummary } from "./rpc"
 
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024
 const FETCH_TIMEOUT = 20_000
+const MAX_REDIRECTS = 5
 const SAFE_ID = /^\w[\w.-]*$/
 
-export function defaultRoot() {
+function expandHome(file: string) {
+  return file === "~" || file.startsWith("~/") || file.startsWith("~\\") ? path.join(os.homedir(), file.slice(1)) : file
+}
+
+function defaultRoot() {
   const data = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share")
   return path.join(data, "opencode", "result")
+}
+
+/** The `dir` option, with `~` expanded; relative paths resolve against the home directory. */
+export function resolveRoot(dir: unknown) {
+  if (typeof dir !== "string" || !dir.trim()) return defaultRoot()
+  return path.resolve(os.homedir(), expandHome(dir.trim()))
+}
+
+async function download(src: string, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(FETCH_TIMEOUT)
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+  let url = new URL(src)
+  for (let redirects = 0; ; redirects++) {
+    const response = await fetch(url, { signal: combined, redirect: "manual" })
+    const location = response.headers.get("location")
+    if (response.status >= 300 && response.status < 400 && location) {
+      await response.body?.cancel()
+      if (redirects >= MAX_REDIRECTS) throw new Error("too many redirects")
+      url = new URL(location, url)
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`redirect to ${url.protocol} is not allowed`)
+      continue
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (Number(response.headers.get("content-length")) > MAX_IMAGE_BYTES) throw new Error("larger than 64 MiB")
+    // content-length can be missing or wrong, so count the bytes as they arrive.
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for await (const chunk of response.body ?? []) {
+      size += chunk.length
+      if (size > MAX_IMAGE_BYTES) {
+        await response.body?.cancel().catch(() => {})
+        throw new Error("larger than 64 MiB")
+      }
+      chunks.push(chunk)
+    }
+    return { bytes: new Uint8Array(Buffer.concat(chunks)), name: path.basename(url.pathname) }
+  }
 }
 
 export function summarize(report: Report): ReportSummary {
@@ -46,16 +88,8 @@ async function readSource(src: string, base: string, signal?: AbortSignal) {
       name: "image",
     }
   }
-  if (/^https?:\/\//i.test(src)) {
-    const timeout = AbortSignal.timeout(FETCH_TIMEOUT)
-    const response = await fetch(src, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    if (Number(response.headers.get("content-length")) > MAX_IMAGE_BYTES) throw new Error("larger than 64 MiB")
-    return { bytes: new Uint8Array(await response.arrayBuffer()), name: path.basename(new URL(src).pathname) }
-  }
-  let file = src.startsWith("file:") ? fileURLToPath(src) : src
-  if (file === "~" || file.startsWith("~/") || file.startsWith("~\\")) file = path.join(os.homedir(), file.slice(1))
-  file = path.resolve(base, file)
+  if (/^https?:\/\//i.test(src)) return download(src, signal)
+  const file = path.resolve(base, expandHome(src.startsWith("file:") ? fileURLToPath(src) : src))
   return { bytes: new Uint8Array(await readFile(file)), name: path.basename(file) }
 }
 
@@ -104,10 +138,6 @@ export class Store {
     const report = await this.get(sessionID, reportID)
     if (!report?.images.some((image) => image.file === file)) return undefined
     return path.join(report.dir, file)
-  }
-
-  async remove(sessionID: string, reportID: string) {
-    await rm(this.dir(sessionID, reportID), { recursive: true, force: true })
   }
 
   async create(input: {
@@ -192,6 +222,7 @@ export class Store {
     signal?: AbortSignal,
   ) {
     const images = [...existing]
+    const written: string[] = []
     const failures: string[] = []
     const blocks: Block[] = []
     for (const block of splitMarkdown(markdown)) {
@@ -207,16 +238,20 @@ export class Store {
         const file = `images/${String(images.length + 1).padStart(2, "0")}-${safeName(name)}.${kind.ext}`
         await mkdir(path.join(dir, "images"), { recursive: true })
         await writeFile(path.join(dir, file), bytes)
+        written.push(path.join(dir, file))
         images.push({ file, alt: block.alt, mime: kind.mime, width: kind.width, height: kind.height, source: block.src })
         blocks.push({ ...block, src: file })
       } catch (error) {
         failures.push(`- ${block.src}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    if (failures.length)
+    if (failures.length) {
+      // The report keeps its old image list, so copies made by this failed call would be orphans.
+      await Promise.all(written.map((file) => rm(file, { force: true })))
       throw new Error(
         `Could not add ${failures.length} image(s):\n${failures.join("\n")}\nUse absolute paths, paths relative to ${base}, http(s) URLs or data URLs.`,
       )
+    }
     return { markdown: joinMarkdown(blocks), images }
   }
 }
