@@ -4,7 +4,7 @@ A plugin for the [OpenCode](https://opencode.ai) TUI (v2) that lets the agent ha
 finishes a task: a summary in markdown with links, notes and screenshots. Reports appear in the sidebar and open in a
 large window right in the terminal, images included.
 
-> Supports OpenCode V2 only (built against `@opencode/plugin` 2.2.0). V1 is not supported.
+> Supports OpenCode V2 2.2.5 or newer. V1 is not supported.
 
 <p align="center">
   <img src="docs/report.png" alt="A result report with a screenshot and a clickable table of contents" width="1000">
@@ -35,22 +35,17 @@ large window right in the terminal, images included.
 
 ## Requirements
 
-- OpenCode V2 2.2.0 or newer.
+- OpenCode V2 2.2.5 or newer, on Windows, macOS or Linux.
 - For sharp images, a terminal with Kitty graphics or Sixel: for example kitty, WezTerm, Ghostty, foot, iTerm2, or
   Windows Terminal 1.22+. Other terminals show images as colored blocks.
 
 ## Install
 
-Install the plugin from GitHub with the OpenCode CLI:
+Install a release from GitHub with the OpenCode CLI. Pin the tag: a pinned install is cached and OpenCode can tell
+when a newer release exists.
 
 ```sh
-opencode plugin add github:igorovh/opencode-result
-```
-
-To pin a release, add its tag:
-
-```sh
-opencode plugin add github:igorovh/opencode-result#v0.1.0
+opencode plugin add github:igorovh/opencode-result#v0.2.0
 ```
 
 This adds the plugin to the global `plugins` array in `~/.config/opencode/opencode.jsonc`. Restart the TUI and a
@@ -61,15 +56,15 @@ You can also add the entry to the config yourself:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["github:igorovh/opencode-result"]
+  "plugins": ["github:igorovh/opencode-result#v0.2.0"]
 }
 ```
 
 Update or remove it later:
 
 ```sh
-opencode plugin update github:igorovh/opencode-result
-opencode plugin remove github:igorovh/opencode-result
+opencode plugin update github:igorovh/opencode-result#v0.2.0
+opencode plugin remove github:igorovh/opencode-result#v0.2.0
 ```
 
 ## Agent tools
@@ -81,11 +76,11 @@ opencode plugin remove github:igorovh/opencode-result
 | `result_list` | Lists the reports in the current session |
 
 Images use normal markdown, one per line: `![caption](path)`. A path can be absolute, relative to the session
-directory, or a `file:`, `http(s):` or `data:` URL. PNG, JPEG, GIF and WebP are accepted. A missing or invalid image
-fails the call with a clear error, so the agent can fix it.
+directory, start with `~`, or be a `file:`, `http(s):` or `data:` URL. PNG, JPEG, GIF and WebP up to 64 MiB are
+accepted. A missing or invalid image fails the call with a clear error, so the agent can fix it.
 
-You do not have to ask for a report. By default the plugin reminds the agent to publish one when it finishes a task
-(see `remind` below).
+Ask the agent for a report ("publish a result report when you're done"), or turn on `remind` (below) so it does so
+after every task.
 
 ## Keys and commands
 
@@ -112,20 +107,26 @@ report opened from `/results` goes back to the list.
 
 ## Options
 
+Both options belong to the server part of the plugin, so set them on its entry in `opencode.jsonc`.
+`opencode plugin add` does not write options; add them by hand, using the same spec string:
+
 ```jsonc
 {
   "plugins": [
     {
-      "package": "github:igorovh/opencode-result",
-      "options": { "remind": true, "dir": "D:/reports" }
+      "package": "github:igorovh/opencode-result#v0.2.0",
+      "options": { "remind": true, "dir": "~/reports" }
     }
   ]
 }
 ```
 
-- `remind` (default `true`): adds a short system instruction asking the agent to publish a report when it finishes
-  a task. Set it to `false` to publish reports only when you ask.
-- `dir`: where reports are stored. The default is `~/.local/share/opencode/result/`.
+- `remind` (default `false`): adds a short system instruction to every request, asking the agent to publish a
+  report when it finishes a task. It costs a few dozen tokens per request.
+- `dir`: where reports are stored. `~` is expanded and relative paths start at your home directory. The default is
+  `$XDG_DATA_HOME/opencode/result`, or `~/.local/share/opencode/result` when `XDG_DATA_HOME` is not set.
+
+The TUI part has no options, so nothing needs to go into `~/.config/opencode/cli.json`.
 
 ## How it works
 
@@ -133,9 +134,13 @@ report opened from `/results` goes back to the list.
   folder. Reports from subagent sessions show up in their parent session too.
 - **Server and TUI.** The server part registers the agent tools and an RPC service. The TUI reads reports through
   that RPC, so it also works when OpenCode runs on another machine: images are then sent over RPC.
+- **Compiled TUI.** OpenCode does not run the Solid compiler on plugin files inside `node_modules`, where a
+  `github:` install lives ([anomalyco/opencode#39986](https://github.com/anomalyco/opencode/issues/39986)), so the
+  repository ships the compiled `dist/tui.js`.
 - **Images.** They render with OpenTUI's `<image>`: Kitty graphics, then Sixel, then colored Unicode blocks. While you
   scroll, images use blocks, which move smoothly, and switch to full quality once scrolling stops. Force a protocol
-  with `OPENTUI_IMAGE_PROTOCOL=kitty|sixel|blocks`.
+  with `OPENTUI_IMAGE_PROTOCOL=kitty|sixel|blocks`. Remote images are downloaded with a 20 s timeout and at most 5
+  redirects.
 - **The report window** is the plugin's own overlay rather than OpenCode's dialog, because the dialog is at most
   116 columns wide.
 
@@ -149,10 +154,13 @@ cd opencode-result
 bun install
 bun test
 bun run typecheck
+bun run compile      # rebuilds dist/tui.js; commit it with any change to src/tui.tsx
+bun run check:dist   # dist/ may import only modules that OpenCode provides
 ```
 
 To run your checkout instead of the published plugin, put its path in `plugins` and restart the TUI. After that,
-OpenCode reloads the plugin whenever a file changes.
+OpenCode reloads the plugin whenever a file changes. The TUI loads `dist/tui.js`, so run `bun run compile` after
+editing `src/tui.tsx`.
 
 ```jsonc
 {
