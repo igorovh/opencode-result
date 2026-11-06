@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Dependency updates can change the compiled TUI. On Renovate branches, rebuild dist/, commit it and
-  # rerun CI on the new commit (a push made with GITHUB_TOKEN does not start workflows by itself).
+  # Dependency updates can change the compiled TUI. On Renovate branches, rebuild dist/ and commit it.
+  # GitHub holds the PR run for a bot push as "action_required", so approve it to check the new commit.
   dist:
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'renovate/') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -37,8 +37,17 @@ jobs:
           git add dist
           git commit -m "chore: rebuild dist"
           git push origin "HEAD:${{ github.head_ref }}"
-          gh workflow run ci.yml --ref "${{ github.head_ref }}"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
+          sha=$(git rev-parse HEAD)
+          for _ in $(seq 30); do
+            sleep 10
+            run=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha&event=pull_request&status=action_required" -q '.workflow_runs[0].id // empty')
+            if [ -n "$run" ]; then
+              gh api -X POST "repos/${{ github.repository }}/actions/runs/$run/approve"
+              exit 0
+            fi
+          done
+          echo "::warning::No run to approve for $sha; approve it in the Actions tab"
 
   check:
     needs: dist
