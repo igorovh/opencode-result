@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "description": "Result reports for the OpenCode TUI: the agent publishes a markdown summary with links and screenshots, shown in the sidebar and a large in-terminal viewer",
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "license": "MIT",
   "author": "igorovh",
   "private": true,
