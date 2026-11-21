@@ -29,7 +29,9 @@
     "compile": "bun script/compile.ts",
     "check:dist": "bun script/check-dist.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "record": "opencode-tui-recorder record",
+    "tui": "opencode-tui-recorder tui"
   },
   "peerDependencies": {
     "@opencode/plugin": ">=2.2.5",
@@ -49,6 +51,7 @@
     "@opentui/core": "0.9.7",
     "@opentui/solid": "0.9.7",
     "@types/bun": "1.4.5",
+    "opencode-tui-recorder": "github:igorovh/opencode-tui-recorder#v0.1.0",
     "solid-js": "1.9.20",
     "typescript": "7.0.2"
   }
