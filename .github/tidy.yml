@@ -2,3 +2,42 @@
 review:
   # Run on the pull request's code in a container without secrets; the reviewer reads the output.
   checks: ["bun install --frozen-lockfile", "bun run typecheck", "bun run compile", "bun run check:dist", "bun test"]
+  extras:
+    - name: Demo
+      when: ["src/**"]
+      instructions: >-
+        Record the behaviour this pull request changes in the real OpenCode TUI. Start with begin: one session
+        opens with two seeded reports in the sidebar's Results section, "Sidebar and viewer" (two images, a
+        table) and "Flaky checkout test"; "Demo recordings" in AGENTS.md describes them. Every step prints the
+        screen, so check that the change shows before you record. Then call rec-start, the steps that show the
+        change with expect or expect-not after each action, and rec-stop. Open a report by clicking its title
+        in the sidebar, or with type /results, key Enter and key Enter; inside, use key n, key End and key
+        Escape. A check should pass on this pull request and fail on the base branch, so expect text that the
+        change adds or removes rather than text that shows on both.
+      image: node:22-bookworm
+      # Before runs this pull request's recorder and seed with the base branch's plugin from /base.
+      before: pr-tools
+      setup: |
+        apt-get update -qq && apt-get install -y -qq ffmpeg jq > /dev/null
+        curl -fsSL -o /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
+        chmod +x /usr/local/bin/ttyd
+        npm install --global --loglevel=error bun "@opencode/cli@$(jq -r '.devDependencies["@opencode/plugin"]' package.json)" > /dev/null
+        bun install --frozen-lockfile > /dev/null
+        if [ -n "$TIDY_BASE" ]; then (cd "$TIDY_BASE" && bun install --frozen-lockfile > /dev/null); fi
+        # Steps run as an unprivileged user, so Chromium goes where everyone can read it.
+        PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright bunx playwright install --with-deps chromium > /dev/null
+      interactive:
+        start: ["./node_modules/.bin/opencode-tui-recorder", "tui", "serve"]
+        steps:
+          begin: ["./node_modules/.bin/opencode-tui-recorder", "tui", "begin"]
+          screen: ["./node_modules/.bin/opencode-tui-recorder", "tui", "screen"]
+          wait: ["./node_modules/.bin/opencode-tui-recorder", "tui", "wait"]
+          hover: ["./node_modules/.bin/opencode-tui-recorder", "tui", "hover"]
+          click: ["./node_modules/.bin/opencode-tui-recorder", "tui", "click"]
+          key: ["./node_modules/.bin/opencode-tui-recorder", "tui", "key"]
+          type: ["./node_modules/.bin/opencode-tui-recorder", "tui", "type"]
+          expect: ["./node_modules/.bin/opencode-tui-recorder", "tui", "expect"]
+          expect-not: ["./node_modules/.bin/opencode-tui-recorder", "tui", "expect-not"]
+          expect-above: ["./node_modules/.bin/opencode-tui-recorder", "tui", "expect-above"]
+          rec-start: ["./node_modules/.bin/opencode-tui-recorder", "tui", "rec-start"]
+          rec-stop: ["./node_modules/.bin/opencode-tui-recorder", "tui", "rec-stop", "--out", "{out}/demo.gif"]

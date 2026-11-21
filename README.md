@@ -175,6 +175,15 @@ editing `src/tui.tsx`.
 }
 ```
 
+To record the real OpenCode TUI with your checkout to a GIF, run `bun run record`
+([opencode-tui-recorder](https://github.com/igorovh/opencode-tui-recorder), set up in `recorder.config.ts` with two
+sample reports). It needs `opencode` (V2), `ttyd` and `ffmpeg` on `PATH` (or `OPENCODE_BIN` and `TTYD_BIN`) and
+Playwright's Chromium:
+
+```sh
+bun run record -- --out demo.gif --step "click Sidebar and viewer" --step "expect CONTENTS" --step "key n"
+```
+
 ## License
 
 [MIT](LICENSE)
