@@ -225,15 +225,64 @@ function asyncValue(source, load, initial, options = {}) {
   });
   return value;
 }
+var RPC_RETRY_ATTEMPTS = 15;
+var RPC_RETRY_DELAY_MS = 250;
+function isRpcUnavailable(error) {
+  const seen = new Set;
+  const queue = [error];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === null || current === undefined || seen.has(current))
+      continue;
+    seen.add(current);
+    if (typeof current === "string") {
+      if (current.includes("rpc.unavailable") || current.includes("RPC is unavailable"))
+        return true;
+      continue;
+    }
+    if (typeof current === "object") {
+      const record = current;
+      for (const key of ["reason", "type", "code"]) {
+        const value = record[key];
+        if (typeof value === "string" && (value.includes("rpc.unavailable") || value.includes("RPC is unavailable")))
+          return true;
+      }
+      for (const key of ["message", "detail"]) {
+        const value = record[key];
+        if (typeof value === "string" && (value.includes("rpc.unavailable") || value.includes("RPC is unavailable")))
+          return true;
+      }
+      if (current instanceof Error) {
+        if (current.cause !== undefined)
+          queue.push(current.cause);
+      }
+    }
+  }
+  return false;
+}
+async function withRpcRetry(load, attempts = RPC_RETRY_ATTEMPTS, delayMs = RPC_RETRY_DELAY_MS) {
+  let lastError;
+  for (let attempt = 0;; attempt++) {
+    try {
+      return await load();
+    } catch (error) {
+      lastError = error;
+      if (!isRpcUnavailable(error) || attempt >= attempts)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
 function createUI(context, syntax) {
   const api = context.client.rpc(ResultRpc);
   const theme = () => context.theme;
   const [version, setVersion] = createSignal(0);
   const familyOf = (sessionID) => [...new Set([sessionID, ...context.data.session.family(sessionID)])];
-  const fetchList = async (sessionIDs) => (await api.list({
+  const fetchList = async (sessionIDs) => withRpcRetry(async () => (await api.list({
     sessionIDs
-  })).reports;
-  const fetchReport = async (ref) => (await api.get(ref)).report;
+  })).reports);
+  const fetchReport = async (ref) => withRpcRetry(async () => (await api.get(ref)).report);
   const repaint = () => {
     context.renderer.forceFullRepaintRequested = true;
     context.renderer.requestRender();
@@ -1104,5 +1153,9 @@ var tui_default = Plugin.define({
   }
 });
 export {
-  tui_default as default
+  RPC_RETRY_ATTEMPTS,
+  RPC_RETRY_DELAY_MS,
+  tui_default as default,
+  isRpcUnavailable,
+  withRpcRetry
 };
