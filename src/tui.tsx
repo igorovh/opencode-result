@@ -82,6 +82,60 @@ function asyncValue<S, T>(
   return value
 }
 
+// The server loads the plugin on the first request for a directory, so the first list request can
+// arrive before the RPC exists and fail with `rpc.unavailable`. Retry that transient error briefly.
+export const RPC_RETRY_ATTEMPTS = 15
+export const RPC_RETRY_DELAY_MS = 250
+
+export function isRpcUnavailable(error: unknown): boolean {
+  const seen = new Set<unknown>()
+  const queue: unknown[] = [error]
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (current === null || current === undefined || seen.has(current)) continue
+    seen.add(current)
+    if (typeof current === "string") {
+      if (current.includes("rpc.unavailable") || current.includes("RPC is unavailable")) return true
+      continue
+    }
+    if (typeof current === "object") {
+      const record = current as Record<string, unknown>
+      for (const key of ["reason", "type", "code"]) {
+        const value = record[key]
+        if (typeof value === "string" && (value.includes("rpc.unavailable") || value.includes("RPC is unavailable")))
+          return true
+      }
+      for (const key of ["message", "detail"]) {
+        const value = record[key]
+        if (typeof value === "string" && (value.includes("rpc.unavailable") || value.includes("RPC is unavailable")))
+          return true
+      }
+      if (current instanceof Error) {
+        if (current.cause !== undefined) queue.push(current.cause)
+      }
+    }
+  }
+  return false
+}
+
+export async function withRpcRetry<T>(
+  load: () => Promise<T>,
+  attempts = RPC_RETRY_ATTEMPTS,
+  delayMs = RPC_RETRY_DELAY_MS,
+): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await load()
+    } catch (error) {
+      lastError = error
+      if (!isRpcUnavailable(error) || attempt >= attempts) throw error
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+  throw lastError
+}
+
 function createUI(context: Context, syntax: SyntaxStyle) {
   const api = context.client.rpc(ResultRpc)
   const theme = () => context.theme
@@ -90,9 +144,10 @@ function createUI(context: Context, syntax: SyntaxStyle) {
   const familyOf = (sessionID: string) => [...new Set([sessionID, ...context.data.session.family(sessionID)])]
 
   const fetchList = async (sessionIDs: string[]) =>
-    ((await api.list({ sessionIDs })) as { reports: ReportSummary[] }).reports
+    withRpcRetry(async () => ((await api.list({ sessionIDs })) as { reports: ReportSummary[] }).reports)
 
-  const fetchReport = async (ref: Ref) => ((await api.get(ref)) as { report?: Report }).report
+  const fetchReport = async (ref: Ref) =>
+    withRpcRetry(async () => ((await api.get(ref)) as { report?: Report }).report)
 
   // Sixel and Kitty pixels are not cells, so the diff renderer can leave them behind; redraw everything.
   const repaint = () => {

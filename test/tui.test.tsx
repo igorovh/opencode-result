@@ -12,7 +12,12 @@ import type sourcePlugin from "../src/tui"
 import { Store } from "../src/store"
 
 // test/install.test.ts points this at a copy installed under node_modules.
-const plugin: typeof sourcePlugin = (await import(process.env.RESULT_TUI ?? "../src/tui")).default
+const pluginModule = await import(process.env.RESULT_TUI ?? "../src/tui")
+const plugin: typeof sourcePlugin = pluginModule.default
+const { isRpcUnavailable, withRpcRetry } = pluginModule as {
+  isRpcUnavailable: (error: unknown) => boolean
+  withRpcRetry: <T>(load: () => Promise<T>, attempts?: number, delayMs?: number) => Promise<T>
+}
 
 // Every theme token resolves to the same grey, whatever its path.
 function fakeTheme(): any {
@@ -85,7 +90,7 @@ const imageProtocols = (node: any) => images(node).map((image) => image.protocol
 let root: string
 afterEach(() => rm(root, { recursive: true, force: true }))
 
-async function setup(height = 40) {
+async function setup(height = 40, options: { listFailures?: number } = {}) {
   root = await mkdtemp(path.join(os.tmpdir(), "result-tui-"))
   await writeFile(
     path.join(root, "shot.png"),
@@ -108,7 +113,13 @@ async function setup(height = 40) {
   let pick: (options: { title: string; value: unknown }[]) => unknown = () => undefined
 
   const rpc = {
-    list: async ({ sessionIDs }: { sessionIDs: string[] }) => ({ reports: await store.list(sessionIDs) }),
+    list: async ({ sessionIDs }: { sessionIDs: string[] }) => {
+      if ((options.listFailures ?? 0) > 0) {
+        options.listFailures!--
+        throw new Error("RPC is unavailable: result")
+      }
+      return { reports: await store.list(sessionIDs) }
+    },
     get: async ({ sessionID, reportID }: { sessionID: string; reportID: string }) => ({
       report: await store.get(sessionID, reportID),
     }),
@@ -293,5 +304,47 @@ test("a created event shows a toast", async () => {
   for (const listener of ui.listeners)
     listener({ data: { sessionID: "ses_a", reportID: ui.report.id, title: "Dark mode", created: true } })
   expect(ui.toasts).toEqual(["Dark mode"])
+  ui.renderer.destroy()
+})
+
+test("transient rpc.unavailable errors are detected", () => {
+  expect(isRpcUnavailable(new Error("RPC is unavailable: result"))).toBe(true)
+  expect(isRpcUnavailable({ reason: "rpc.unavailable" })).toBe(true)
+  expect(isRpcUnavailable(new Error("boom"))).toBe(false)
+  expect(isRpcUnavailable(undefined)).toBe(false)
+})
+
+test("withRpcRetry retries unavailable errors and rethrows others", async () => {
+  let calls = 0
+  const result = await withRpcRetry(
+    async () => {
+      calls++
+      if (calls < 3) throw new Error("RPC is unavailable: result")
+      return "ok"
+    },
+    5,
+    1,
+  )
+  expect(result).toBe("ok")
+  expect(calls).toBe(3)
+
+  let other = 0
+  await expect(
+    withRpcRetry(
+      async () => {
+        other++
+        throw new Error("boom")
+      },
+      5,
+      1,
+    ),
+  ).rejects.toThrow("boom")
+  expect(other).toBe(1)
+})
+
+test("the sidebar appears after transient rpc.unavailable list failures", async () => {
+  const ui = await setup(40, { listFailures: 2 })
+  await ui.waitFor("Results")
+  expect(ui.captureCharFrame()).toContain("Dark mode")
   ui.renderer.destroy()
 })
