@@ -46,10 +46,10 @@
     "solid-js": { "optional": true }
   },
   "devDependencies": {
-    "@opencode/plugin": "2.3.2",
-    "@opencode/theme": "2.3.2",
-    "@opentui/core": "0.9.7",
-    "@opentui/solid": "0.9.7",
+    "@opencode/plugin": "2.4.1",
+    "@opencode/theme": "2.4.1",
+    "@opentui/core": "0.9.9",
+    "@opentui/solid": "0.9.9",
     "@types/bun": "1.4.5",
     "opencode-tui-recorder": "github:igorovh/opencode-tui-recorder#v0.1.0",
     "solid-js": "1.9.20",
