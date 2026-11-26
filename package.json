@@ -52,7 +52,7 @@
     "@opentui/solid": "0.9.9",
     "@types/bun": "1.4.5",
     "opencode-tui-recorder": "github:igorovh/opencode-tui-recorder#v0.1.0",
-    "solid-js": "1.9.20",
+    "solid-js": "2.0.4",
     "typescript": "7.0.2"
   }
 }
